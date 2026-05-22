@@ -1,0 +1,1305 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>주식 모니터 — KOSPI</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #fafafa;
+    --bg-card: #ffffff;
+    --border: #e5e7eb;
+    --text: #111;
+    --text-muted: #6b7280;
+    --up: #d92d20;
+    --down: #1d4ed8;
+    --flat: #6b7280;
+    --primary: #3b82f6;
+    --primary-hover: #2563eb;
+    --secondary: #e5e7eb;
+    --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-lg: 0 10px 30px rgba(0,0,0,0.252);
+    --font-stack: "Helvetica Neue", Helvetica, "Noto Sans KR", Arial, sans-serif;
+    --mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: var(--font-stack);
+    background: var(--bg-soft);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 50;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  header .right { display: flex; gap: 8px; align-items: center; }
+  #statusBar { font-size: 12px; color: var(--text-muted); margin-right: 8px; }
+  #statusBar.error { color: var(--up); }
+  #statusBar.ok { color: #059669; }
+  .icon-btn {
+    width: 34px; height: 34px; border: 1px solid var(--border);
+    border-radius: 8px; background: #fff; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+  .icon-btn:hover { background: #f3f4f6; }
+  main { padding: 10px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+  }
+  @media (min-width: 1400px) { .grid { grid-template-columns: repeat(8, 1fr); } }
+  @media (max-width: 480px) {
+    .grid { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    main { padding: 6px; }
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    box-shadow: var(--shadow);
+    transition: border-color .15s ease;
+    position: relative;
+    min-height: 130px;
+    display: flex; flex-direction: column;
+  }
+  .card:hover { border-color: #cbd5e1; }
+  .card.kr::before {
+    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    border-top-left-radius: 10px; border-top-right-radius: 10px;
+    background: #ef4444;
+  }
+  .card-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; gap: 6px; }
+  .card-name { font-weight: 600; font-size: 13px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-ticker { font-family: var(--mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+  .card-price { font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; margin: 2px 0; }
+  .card-price.up { color: var(--up); }
+  .card-price.down { color: var(--down); }
+  .card-change { font-family: var(--mono); font-size: 11px; }
+  .card-change.up { color: var(--up); }
+  .card-change.down { color: var(--down); }
+  .card-meta { display: flex; gap: 8px; margin-top: 6px; font-size: 10px; color: var(--text-muted); }
+  .card-meta span b { color: var(--text); font-weight: 600; }
+  .card-graph { margin-top: 6px; width: 100%; height: 36px; background: #fafafa; border-radius: 4px; }
+  .card-past { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 6px; font-size: 10px; }
+  .card-past .pp { color: var(--text-muted); }
+  .card-past .pp b { color: var(--text); font-family: var(--mono); }
+  .card-indicators { display: flex; gap: 8px; margin-top: 4px; font-size: 10px; color: var(--text-muted); }
+  .card-indicators b { font-family: var(--mono); font-weight: 600; color: var(--text); }
+  .card-indicators .up { color: var(--up); }
+  .card-indicators .down { color: var(--down); }
+  .card-indicators .overbought { color: var(--up); }
+  .card-indicators .oversold   { color: var(--down); }
+  .card-foreign { margin-top: 3px; font-size: 10px; color: var(--text-muted); }
+  .card-foreign b { font-family: var(--mono); font-weight: 600; color: var(--text); }
+  .card-foreign b.buy  { color: var(--up); }
+  .card-foreign b.sell { color: var(--down); }
+
+  #widget-row { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .market-widget {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; box-shadow: var(--shadow); min-height: 195px;
+    display: flex; flex-direction: column;
+  }
+  .mw-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px; }
+  .mw-title  { font-weight: 600; font-size: 14px; }
+  .mw-ticker { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .mw-price  { font-family: var(--mono); font-size: 26px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
+  .mw-price.up { color: var(--up); }
+  .mw-price.down { color: var(--down); }
+  .mw-change { font-family: var(--mono); font-size: 12px; margin-bottom: 4px; }
+  .mw-change.up { color: var(--up); }
+  .mw-change.down { color: var(--down); }
+  .mw-graph  { flex: 1; min-height: 100px; border-radius: 4px; background: #fafafa; margin-top: 4px; }
+  .mw-updated { font-size: 10px; color: var(--text-muted); margin-top: 3px; text-align: right; }
+
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    display: none; align-items: center; justify-content: center;
+    z-index: 200; padding: 16px;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: #fff; border-radius: 12px;
+    padding: 18px; min-width: 320px; max-width: 520px; width: 100%;
+    max-height: 90vh; overflow-y: auto;
+    box-shadow: var(--shadow-lg);
+  }
+  .modal h2 { margin: 0 0 12px 0; font-size: 16px; font-weight: 600; }
+  .modal-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+  .modal-row label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+  .modal-row input, .modal-row select {
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+    font-family: var(--font-stack); font-size: 13px; background: #fff;
+  }
+  .modal-row input[type="text"], .modal-row input[type="password"] { font-family: var(--mono); }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  .btn { padding: 8px 14px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; font-family: var(--font-stack); font-size: 13px; font-weight: 500; }
+  .btn.primary { background: var(--primary); color: #fff; }
+  .btn.primary:hover { background: var(--primary-hover); }
+  .btn.primary:disabled { background: #93c5fd; cursor: not-allowed; }
+  .btn.secondary { background: var(--secondary); color: var(--text); }
+  .btn.secondary:hover { background: #d1d5db; }
+
+  #detailView {
+    position: fixed; inset: 0; background: #fff; z-index: 300;
+    display: none; flex-direction: column; overflow-y: auto;
+  }
+  #detailView.open { display: flex; }
+  #detailView .detail-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: #fff; z-index: 1;
+  }
+  #detailView .detail-title { font-size: 18px; font-weight: 600; }
+  #detailView .detail-sub { font-size: 12px; color: var(--text-muted); font-family: var(--mono); }
+  #detailView .detail-body { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  #detailView .detail-price { font-family: var(--mono); font-size: 36px; font-weight: 700; }
+  #detailView .detail-graph { width: 100%; height: 320px; background: #fafafa; border-radius: 8px; border: 1px solid var(--border); }
+  #detailView .past-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  #detailView .past-cell { background: var(--bg-soft); border: 1px solid var(--border); padding: 10px; border-radius: 6px; }
+  #detailView .past-cell .past-label { font-size: 11px; color: var(--text-muted); }
+  #detailView .past-cell .past-val { font-family: var(--mono); font-size: 16px; font-weight: 600; margin-top: 2px; }
+  #detailView .past-cell select { width: 100%; margin-top: 6px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; font-size: 11px; }
+  @media (max-width: 480px) {
+    #detailView .detail-graph { height: 200px; }
+    #detailView .detail-price { font-size: 28px; }
+  }
+
+  #toast {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: #111; color: #fff; padding: 8px 14px; border-radius: 6px;
+    font-size: 12px; opacity: 0; transition: opacity .2s; z-index: 1000;
+    pointer-events: none; max-width: 90vw;
+  }
+  #toast.show { opacity: 1; }
+  #toast.error { background: #b91c1c; }
+  #toast.ok    { background: #059669; }
+
+  .section-label { font-size: 11px; color: var(--text-muted); margin: 12px 4px 6px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+  .note { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+  .past-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .past-row select { flex: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>주식 모니터 — KOSPI</h1>
+  <div class="right">
+    <span id="statusBar">로딩 중…</span>
+    <button class="icon-btn" id="globalSettingsBtn" title="전역 설정">⚙</button>
+  </div>
+</header>
+
+<main>
+  <div class="section-label">KOSPI · 한국 (16)</div>
+  <section id="grid-kr" class="grid"></section>
+  <div id="widget-row">
+    <div class="market-widget" id="market-combined-widget">
+      <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;">
+        <div style="flex:1; min-width:140px;">
+          <div class="mw-header">
+            <span class="mw-title">원/달러 환율</span>
+            <span class="mw-ticker">USD/KRW</span>
+          </div>
+          <div class="mw-price" id="fw-price">—</div>
+          <div class="mw-change" id="fw-change">—</div>
+        </div>
+        <div style="flex:1; min-width:140px;">
+          <div class="mw-header">
+            <span class="mw-title">WTI 원유</span>
+            <span class="mw-ticker">CL=F · USD/bbl</span>
+          </div>
+          <div class="mw-price" id="ow-price">—</div>
+          <div class="mw-change" id="ow-change">—</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:12px; margin-top:4px; font-size:10px; color:var(--text-muted);">
+        <span><span style="display:inline-block;width:18px;height:2px;background:#16a34a;vertical-align:middle;margin-right:3px;border-radius:1px;"></span>USD/KRW</span>
+        <span><span style="display:inline-block;width:18px;height:2px;background:#111111;vertical-align:middle;margin-right:3px;border-radius:1px;"></span>WTI</span>
+      </div>
+      <canvas class="mw-graph" id="combined-graph"></canvas>
+      <div class="mw-updated" id="fw-updated"></div>
+    </div>
+  </div>
+</main>
+
+<!-- Global Settings Modal -->
+<div class="modal-backdrop" id="globalSettingsModal">
+  <div class="modal">
+    <h2>전역 설정 — KOSPI</h2>
+    <div class="modal-row">
+      <label>KIS App Key</label>
+      <input id="gs-kis-key" type="password" autocomplete="off" />
+    </div>
+    <div class="modal-row">
+      <label>KIS App Secret</label>
+      <input id="gs-kis-secret" type="password" autocomplete="off" />
+    </div>
+    <div class="modal-row">
+      <label>KIS 환경</label>
+      <select id="gs-kis-env">
+        <option value="real">실전투자 (openapi.koreainvestment.com:9443)</option>
+        <option value="vts">모의투자 (openapivts.koreainvestment.com:29443)</option>
+      </select>
+    </div>
+    <div class="modal-row">
+      <label>업데이트 주기 (초) — KIS REST 폴링</label>
+      <input id="gs-refresh" type="number" min="0.25" max="10" step="0.25" value="0.25" />
+    </div>
+    <div class="modal-row">
+      <label>프록시 URL (선택, CORS 우회용)</label>
+      <input id="gs-proxy" type="text" placeholder="예: http://127.0.0.25:8081" />
+      <div class="note">KIS API 는 CORS 가 막혀 있어 로컬 프록시가 필요합니다. proxy.js 를 실행하고 여기에 입력하세요.</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" id="gs-cancel">취소</button>
+      <button class="btn primary" id="gs-save">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- Per-grid Settings Modal -->
+<div class="modal-backdrop" id="gridSettingsModal">
+  <div class="modal">
+    <h2>종목 설정 — <span id="ps-title"></span></h2>
+    <div class="modal-row">
+      <label>종목 코드 (6자리 숫자)</label>
+      <input id="ps-ticker" type="text" />
+      <div class="note">예: 005930 (삼성전자)</div>
+    </div>
+    <div class="modal-row">
+      <label>표시 이름 (선택) <span id="ps-name-loading" style="font-size:10px;color:#6b7280;display:none">조회 중…</span></label>
+      <input id="ps-name" type="text" />
+    </div>
+    <div class="modal-row">
+      <label>카드 배경색</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="ps-bgcolor" type="color" value="#ffffff" style="width:40px;height:32px;border:1px solid #e5e7eb;border-radius:6px;padding:2px;cursor:pointer" />
+        <button type="button" class="btn secondary" id="ps-bgcolor-reset" style="padding:4px 10px;font-size:12px">기본값으로 재설정</button>
+      </div>
+    </div>
+    <div class="modal-row">
+      <label>과거 종가 표시 (4개)</label>
+      <div class="past-row"><span>1번:</span><select data-past-idx="0"></select></div>
+      <div class="past-row"><span>2번:</span><select data-past-idx="1"></select></div>
+      <div class="past-row"><span>3번:</span><select data-past-idx="2"></select></div>
+      <div class="past-row"><span>4번:</span><select data-past-idx="3"></select></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" id="ps-cancel">취소</button>
+      <button class="btn primary" id="ps-save">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- Detail Full-screen View -->
+<div id="detailView">
+  <div class="detail-header">
+    <div>
+      <div class="detail-title" id="dv-title">—</div>
+      <div class="detail-sub" id="dv-sub">—</div>
+    </div>
+    <div style="display:flex;gap:6px;">
+      <button class="icon-btn" id="dv-settings" title="설정">⚙</button>
+      <button class="icon-btn" id="dv-close" title="닫기">✕</button>
+    </div>
+  </div>
+  <div class="detail-body">
+    <div class="detail-price" id="dv-price">—</div>
+    <div id="dv-change" class="card-change">—</div>
+    <canvas class="detail-graph" id="dv-graph"></canvas>
+    <div>
+      <div class="section-label">과거 종가 (8개, 각각 설정 가능)</div>
+      <div class="past-grid" id="dv-past"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ============================================================
+// 주식 모니터 — KOSPI 전용 (Kor.html)
+// ============================================================
+
+const SUPABASE_URL = 'https://upqnxyllnenivehmallp.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_o7KDz58nXdjLN7TwOw2Xhg_VBWzOccH';
+const BUCKET       = 'csv-data';
+const DATA_FILE    = 'stock_pl_settings.csv';
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const DEFAULT_KOSPI = [
+  {ticker:'005930', name:'삼성전자'},
+  {ticker:'000660', name:'SK하이닉스'},
+  {ticker:'373220', name:'LG에너지솔루션'},
+  {ticker:'207940', name:'삼성바이오로직스'},
+  {ticker:'005380', name:'현대차'},
+  {ticker:'000270', name:'기아'},
+  {ticker:'005935', name:'삼성전자우'},
+  {ticker:'068270', name:'셀트리온'},
+  {ticker:'035420', name:'NAVER'},
+  {ticker:'105560', name:'KB금융'},
+  {ticker:'055550', name:'신한지주'},
+  {ticker:'035720', name:'카카오'},
+  {ticker:'012330', name:'현대모비스'},
+  {ticker:'028260', name:'삼성물산'},
+  {ticker:'006400', name:'삼성SDI'},
+  {ticker:'051910', name:'LG화학'},
+];
+
+const PAST_OPTIONS = [
+  {key:'1d',  label:'1일 전 (어제)',       days:1},
+  {key:'2d',  label:'2일 전',              days:2},
+  {key:'3d',  label:'3일 전',              days:3},
+  {key:'4d',  label:'4일 전',              days:4},
+  {key:'5d',  label:'5일 전',              days:5},
+  {key:'1w',  label:'1주일 전 (같은 요일)', days:7},
+  {key:'2w',  label:'2주일 전',            days:14},
+  {key:'1m',  label:'1개월 전',            days:30},
+  {key:'3m',  label:'3개월 전',            days:90},
+  {key:'6m',  label:'6개월 전',            days:180},
+  {key:'1y',  label:'1년 전',              days:365},
+];
+function pastByKey(k){ return PAST_OPTIONS.find(p=>p.key===k) || PAST_OPTIONS[0]; }
+
+// App state
+const state = {
+  settings: null,
+  stocks: { kr: [] },
+  prices: {},
+  kisToken: null,
+  kisTokenPending: null,
+  kisLastTokenAt: 0,
+  detailTicker: null,
+  detailPast: null,
+  detailGraphHandle: null,
+  pollTimer: null,
+  forex: { price: null, prevClose: null, change: null, changePct: null, history: [] },
+  oil:   { price: null, prevClose: null, change: null, changePct: null, history: [] },
+};
+
+// Saved US stocks from CSV — preserved on every save so US.html data isn't wiped
+let _savedUsStocks = [];
+
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+function setStatus(text, kind=''){
+  const el = $('#statusBar');
+  el.textContent = text;
+  el.className = kind;
+}
+function toast(msg, kind=''){
+  const el = $('#toast');
+  el.textContent = msg;
+  el.className = 'show ' + kind;
+  clearTimeout(el._t);
+  el._t = setTimeout(()=>{ el.className = ''; }, 2400);
+}
+function fmtNum(n, decimals){
+  if (n == null || isNaN(n)) return '—';
+  if (decimals == null) decimals = (n >= 1000 ? 0 : 2);
+  return Number(n).toLocaleString('ko-KR', {minimumFractionDigits:decimals, maximumFractionDigits:decimals});
+}
+function fmtPct(n){
+  if (n == null || isNaN(n)) return '—';
+  const sign = n > 0 ? '+' : '';
+  return sign + Number(n).toFixed(2) + '%';
+}
+function isMarketKR_open(now=new Date()){
+  const kstNow = new Date(now.getTime() + (9*60 - now.getTimezoneOffset()) * 60000);
+  const day = kstNow.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const minutes = kstNow.getUTCHours()*60 + kstNow.getUTCMinutes();
+  return minutes >= 9*60 && minutes <= 15*60+30;
+}
+
+// --------- Supabase load/save ---------
+async function loadSettings(){
+  setStatus('설정 로딩 중…');
+  try {
+    const { data: { publicUrl } } = sb.storage.from(BUCKET).getPublicUrl(DATA_FILE);
+    const r = await fetch(publicUrl + '?t=' + Date.now(), {
+      cache:'no-store', headers:{'Cache-Control':'no-cache, no-store'}
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return parseSettingsCSV(await r.text());
+  } catch(e){
+    console.warn('Settings load failed, using defaults:', e);
+    return null;
+  }
+}
+function parseSettingsCSV(txt){
+  const lines = txt.split(/\r?\n/).filter(l=>l.length);
+  if (lines.length < 2) return null;
+  for (let i=1; i<lines.length; i++){
+    const line = lines[i];
+    const idx = line.indexOf(',');
+    if (idx < 0) continue;
+    const key = line.slice(0, idx).trim().replace(/^"|"$/g,'');
+    if (key !== 'config') continue;
+    let combined = line.slice(idx+1);
+    let j = i;
+    while (j+1 < lines.length && !rfc4180Balanced(combined)){ j++; combined += '\n' + lines[j]; }
+    combined = combined.trim();
+    if (combined.startsWith('"') && combined.endsWith('"'))
+      combined = combined.slice(1,-1).replace(/""/g,'"');
+    try { return JSON.parse(combined); } catch(e){ return null; }
+  }
+  return null;
+}
+function rfc4180Balanced(s){ let c=0; for (let k=0;k<s.length;k++) if(s[k]==='"') c++; return c%2===0; }
+async function uploadSettingsCSV(payload){
+  const json    = JSON.stringify(payload);
+  const escaped = '"' + json.replace(/"/g,'""') + '"';
+  const csv     = 'key,value\nconfig,' + escaped + '\n';
+  const blob    = new Blob([csv], {type:'text/csv'});
+  const { error } = await sb.storage.from(BUCKET).upload(DATA_FILE, blob, {upsert:true, contentType:'text/csv'});
+  if (error) throw error;
+}
+function buildSettingsPayload(){
+  // Exclude refreshSec — it's local-only, not synced to cloud
+  const { refreshSec: _ignored, ...globalToSave } = state.settings;
+  return { version:1, global: globalToSave, stocks: { kr: state.stocks.kr, us: _savedUsStocks }, detailPast: state.detailPast };
+}
+async function saveSettings(){
+  setStatus('저장 중…');
+  try {
+    await uploadSettingsCSV(buildSettingsPayload());
+    setStatus('저장 완료', 'ok');
+    toast('설정 저장됨', 'ok');
+  } catch(e){
+    console.error(e);
+    setStatus('저장 실패: ' + e.message, 'error');
+    toast('저장 실패: ' + e.message, 'error');
+  }
+}
+
+function makeDefaultStocks(){
+  return { kr: DEFAULT_KOSPI.map(s => ({...s, past:['1d','2d','3d','1w'], bgColor:''})) };
+}
+function makeDefaultGlobal(){
+  return {
+    kisKey: '', kisSecret: '', kisEnv: 'real',
+    finnhubKey: '',   // preserved so US.html keeps its key
+    refreshSec: 0.25, proxyUrl: '',
+    kisTokenData: null,
+  };
+}
+
+// --------- KIS global rate limiter (timestamp-based, serialized queue) ---------
+// KIS real account limit is stated as 20 TPS, but empirically ~1 req/sec is the
+// safe ceiling once you include other KIS connections sharing the same App Key
+// (HTS, mobile app, other tabs). GAP=1000ms is the proven-stable baseline.
+const _kisLimiter = (() => {
+  let GAP = 500;         // ms between dispatches
+  let _penaltyEnd = 0;   // timestamp: while active, double the GAP
+  const queue = [];
+  let lastAt = 0;
+  let timer = null;
+  function effectiveGap(){ return Date.now() < _penaltyEnd ? Math.min(GAP * 2, 3000) : GAP; }
+  function schedule(){
+    if (timer) return;
+    const delay = Math.max(0, lastAt + effectiveGap() - Date.now());
+    timer = setTimeout(() => {
+      timer = null;
+      if (!queue.length) return;
+      const { fn, resolve, reject } = queue.shift();
+      lastAt = Date.now();
+      fn().then(resolve, reject);
+      if (queue.length) schedule();
+    }, delay);
+  }
+  return {
+    setGap(ms){ GAP = ms; },
+    // Call on EGW00201: doubles effective GAP for `ms` milliseconds
+    penalize(ms = 10000){ _penaltyEnd = Math.max(_penaltyEnd, Date.now() + ms); },
+    fetch(...args){
+      return new Promise((resolve, reject) => {
+        queue.push({ fn: () => fetch(...args), resolve, reject });
+        schedule();
+      });
+    }
+  };
+})();
+
+// --------- KIS API ---------
+function kisBase(){
+  return state.settings.kisEnv === 'vts'
+    ? 'https://openapivts.koreainvestment.com:29443'
+    : 'https://openapi.koreainvestment.com:9443';
+}
+function withProxy(url){
+  const p = state.settings.proxyUrl;
+  if (!p) return url;
+  return p.endsWith('/') ? p + url : p + '/' + url;
+}
+async function kisGetToken(){
+  const now = Date.now();
+  if (state.kisToken && state.kisToken.expires_at > now + 60000) return state.kisToken.access_token;
+  if (!state.settings.kisKey || !state.settings.kisSecret) throw new Error('KIS App Key/Secret 미설정');
+  if (state.kisTokenPending) return state.kisTokenPending;
+  if (state.kisLastTokenAt && now - state.kisLastTokenAt < 62000)
+    throw new Error('KIS 토큰 재발급 대기 중 (1분 제한)');
+  state.kisLastTokenAt = now;
+  state.kisTokenPending = (async () => {
+    try {
+      const r = await _kisLimiter.fetch(withProxy(kisBase() + '/oauth2/tokenP'), {
+        method:'POST',
+        headers: {'Content-Type':'application/json; charset=utf-8'},
+        body: JSON.stringify({grant_type:'client_credentials', appkey:state.settings.kisKey, appsecret:state.settings.kisSecret})
+      });
+      if (!r.ok){
+        const t = await r.text();
+        throw new Error('KIS 토큰 발급 실패: ' + r.status + ' ' + t.slice(0,200));
+      }
+      const j = await r.json();
+      state.kisToken = {
+        access_token: j.access_token,
+        expires_at: now + (j.expires_in ? j.expires_in*1000 : 23*3600*1000),
+      };
+      state.settings.kisTokenData = { access_token: state.kisToken.access_token, expires_at: state.kisToken.expires_at };
+      uploadSettingsCSV(buildSettingsPayload()).catch(e => console.warn('Token save failed:', e.message));
+      console.log('[KIS] New token saved, valid until', new Date(state.kisToken.expires_at).toLocaleString());
+      return state.kisToken.access_token;
+    } finally {
+      state.kisTokenPending = null;
+    }
+  })();
+  return state.kisTokenPending;
+}
+async function kisQuote(ticker){
+  const token = await kisGetToken();
+  const url = withProxy(kisBase() + '/uapi/domestic-stock/v1/quotations/inquire-price'
+    + '?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=' + encodeURIComponent(ticker));
+  const r = await _kisLimiter.fetch(url, {
+    headers: {
+      'authorization': 'Bearer ' + token,
+      'appkey': state.settings.kisKey,
+      'appsecret': state.settings.kisSecret,
+      'tr_id': 'FHKST01010100',
+      'custtype':'P',
+    }
+  });
+  if (!r.ok){
+    const body = await r.text().catch(()=>'');
+    throw new Error('KIS 시세 조회 실패: ' + r.status + ' ' + body.slice(0,300));
+  }
+  const j = await r.json();
+  if (j.rt_cd !== '0') throw new Error('KIS: ' + (j.msg1 || j.msg_cd || 'API error'));
+  const out = j.output || {};
+  const price = +out.stck_prpr;
+  const prevClose = +out.stck_sdpr;
+  const open  = +out.stck_oprc;
+  const per = out.per && out.per !== '0' ? +out.per : null;
+  const eps = out.eps ? +out.eps : null;
+  const bps = out.bps ? +out.bps : null;
+  const roe = (eps != null && bps && bps !== 0) ? (eps/bps)*100 : null;
+  return { price, prevClose, open, per, roe };
+}
+async function kisDailyHistory(ticker){
+  const token = await kisGetToken();
+  const url = withProxy(kisBase()
+    + '/uapi/domestic-stock/v1/quotations/inquire-daily-price'
+    + '?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=' + encodeURIComponent(ticker)
+    + '&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0');
+  const r = await _kisLimiter.fetch(url, {
+    headers: {
+      'authorization': 'Bearer ' + token,
+      'appkey': state.settings.kisKey,
+      'appsecret': state.settings.kisSecret,
+      'tr_id': 'FHKST01010400',
+      'custtype':'P',
+    }
+  });
+  if (!r.ok) throw new Error('KIS 일자별 시세 실패: ' + r.status);
+  const j = await r.json();
+  if (j.rt_cd !== '0') throw new Error('KIS daily: ' + (j.msg1 || j.msg_cd || 'API error'));
+  return (j.output || []).map(row => ({
+    date: row.stck_bsop_date,
+    close: +row.stck_clpr,
+    frgnNetBuy: (row.frgn_ntby_qty !== undefined && row.frgn_ntby_qty !== '') ? +row.frgn_ntby_qty : null,
+  })).filter(x => x.close > 0);
+}
+
+// KR name lookup via Naver
+async function naverNameKR(ticker){
+  try {
+    const r = await fetch(`https://m.stock.naver.com/api/search/suggestion?query=${encodeURIComponent(ticker)}`, {headers:{Accept:'application/json'}});
+    if (!r.ok) return null;
+    const j = await r.json();
+    const arr = Array.isArray(j) ? j : (j.result||j.suggestions||[]);
+    const hit = arr.find(x=>(x.itemCode||x.code||'')===ticker);
+    return hit?.itemName||hit?.name||null;
+  } catch(e){ return null; }
+}
+
+function dailyHistoryToGraphPoints(hist, numDays=60){
+  const days = hist.slice(0, numDays).reverse();
+  const now = Date.now();
+  return days.map((h,i) => ({ t: now - (days.length-1-i)*86400*1000, v: h.close }));
+}
+
+// --------- Technical indicators (calculated from daily history) ---------
+function calcEMA(prices, period) { // prices: oldest-first
+  if (prices.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = prices.slice(0, period).reduce((s, v) => s + v, 0) / period;
+  for (let i = period; i < prices.length; i++) ema = prices[i] * k + ema * (1 - k);
+  return ema;
+}
+function calcMACD(hist) { // hist: newest-first
+  const prices = hist.slice(0, Math.min(hist.length, 60)).reverse().map(h => h.close);
+  if (prices.length < 27) return null;
+  const e12 = calcEMA(prices, 12), e26 = calcEMA(prices, 26);
+  return (e12 != null && e26 != null) ? +(e12 - e26).toFixed(1) : null;
+}
+function calcRSI(hist, period = 14) { // hist: newest-first
+  const prices = hist.slice(0, period + 1).reverse().map(h => h.close);
+  if (prices.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = 1; i < prices.length; i++) {
+    const d = prices[i] - prices[i - 1];
+    if (d > 0) gains += d; else losses -= d;
+  }
+  if (losses === 0) return 100;
+  return +(100 - 100 / (1 + gains / losses)).toFixed(1);
+}
+
+// --------- Market data (exchange rate + oil) via Yahoo Finance ---------
+async function fetchMarketQuotes() {
+  const url = 'https://query1.finance.yahoo.com/v8/finance/quote'
+    + '?symbols=USDKRW%3DX%2CCL%3DF'
+    + '&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketPreviousClose';
+  const p = state.settings?.proxyUrl || '';
+  const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
+  const r = await fetch(target, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
+  if (!r.ok) throw new Error('Yahoo quote ' + r.status);
+  const j = await r.json();
+  return j.quoteResponse?.result || [];
+}
+async function fetchMarketChart(symbol) {
+  const url = 'https://query1.finance.yahoo.com/v8/finance/chart/'
+    + encodeURIComponent(symbol) + '?interval=5m&range=1d';
+  const p = state.settings?.proxyUrl || '';
+  const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
+  const r = await fetch(target, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
+  if (!r.ok) throw new Error('Yahoo chart ' + r.status);
+  const j = await r.json();
+  const res = j.chart?.result?.[0]; if (!res) return [];
+  const ts = res.timestamp || [], closes = res.indicators?.quote?.[0]?.close || [];
+  return ts.map((t, i) => ({ t: t * 1000, v: closes[i] })).filter(pt => pt.v != null);
+}
+function drawMarketGraph(canvasId, history, refPrice) {
+  const canvas = document.getElementById(canvasId); if (!canvas) return;
+  if (!history || history.length < 2) return;
+  const last = history[history.length - 1].v;
+  const color = refPrice
+    ? (last > refPrice ? '#d92d20' : last < refPrice ? '#1d4ed8' : '#374151')
+    : '#374151';
+  drawLineGraph(canvas, history, refPrice, { lineColor: color });
+}
+function drawDualMarketGraph(canvasId, hist1, ref1, color1, hist2, ref2, color2) {
+  const canvas = document.getElementById(canvasId); if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  if (canvas.width !== rect.width*dpr || canvas.height !== rect.height*dpr) {
+    canvas.width = rect.width*dpr; canvas.height = rect.height*dpr;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const W = rect.width, H = rect.height;
+  ctx.clearRect(0,0,W,H);
+  function drawSeries(history, refLine, color) {
+    if (!history || history.length < 2) return;
+    const tSpan = history[history.length-1].t - history[0].t;
+    const isDailyData = tSpan > 12*3600*1000 && (history.length < 3 || (history[1].t - history[0].t) > 3600*1000);
+    const windowMs = isDailyData ? tSpan + 1000 : 6.5*3600*1000;
+    const tNow = history[history.length-1].t;
+    const data = history.filter(p => (tNow - p.t) <= windowMs);
+    if (data.length < 2) return;
+    const ts = data.map(p=>p.t), vs = data.map(p=>p.v);
+    const tMin=ts[0], tMax=ts[ts.length-1];
+    const allVals = [...vs, ...(refLine!=null?[refLine]:[])];
+    const vMin=Math.min(...allVals), vMax=Math.max(...allVals);
+    const pad=(vMax-vMin)*0.08||1, lo=vMin-pad, hi=vMax+pad;
+    const x = t => (tMax===tMin ? W : ((t-tMin)/(tMax-tMin))*W);
+    const y = v => H - ((v-lo)/(hi-lo))*H;
+    if (refLine != null) {
+      ctx.save(); ctx.strokeStyle='#d1d5db'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(0,y(refLine)); ctx.lineTo(W,y(refLine)); ctx.stroke();
+      ctx.restore();
+    }
+    ctx.lineWidth=1.5; ctx.strokeStyle=color;
+    ctx.beginPath();
+    data.forEach((p,i) => { const X=x(p.t),Y=y(p.v); if(i===0) ctx.moveTo(X,Y); else ctx.lineTo(X,Y); });
+    ctx.stroke();
+  }
+  drawSeries(hist1, ref1, color1);
+  drawSeries(hist2, ref2, color2);
+}
+function drawCombinedGraph() {
+  drawDualMarketGraph('combined-graph',
+    state.forex.history, state.forex.prevClose, '#16a34a',
+    state.oil.history,   state.oil.prevClose,   '#111111'
+  );
+}
+function renderMarketWidget(idPrefix, data) {
+  const priceEl = document.getElementById(idPrefix + '-price');
+  const changeEl = document.getElementById(idPrefix + '-change');
+  const updEl   = document.getElementById(idPrefix + '-updated');
+  if (!priceEl) return;
+  const isUp = (data.change ?? 0) >= 0;
+  const decimals = idPrefix === 'fw' ? 2 : 2;
+  priceEl.textContent = data.price != null ? fmtNum(data.price, decimals) : '—';
+  priceEl.className   = 'mw-price' + (data.price != null ? (isUp ? ' up' : ' down') : '');
+  if (data.change != null) {
+    const sign = isUp ? '▲' : '▼';
+    changeEl.textContent = `${sign} ${fmtNum(Math.abs(data.change), decimals)} (${fmtPct(data.changePct)})`;
+    changeEl.className = 'mw-change ' + (isUp ? 'up' : 'down');
+  }
+  if (updEl) updEl.textContent = '갱신 ' + new Date().toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  drawCombinedGraph();
+}
+async function updateMarketPrices() {
+  try {
+    const quotes = await fetchMarketQuotes();
+    quotes.forEach(q => {
+      const d = q.symbol === 'USDKRW=X' ? state.forex : q.symbol === 'CL=F' ? state.oil : null;
+      if (!d) return;
+      d.price = q.regularMarketPrice; d.prevClose = q.regularMarketPreviousClose;
+      d.change = q.regularMarketChange; d.changePct = q.regularMarketChangePercent;
+    });
+    renderMarketWidget('fw', state.forex);
+    renderMarketWidget('ow', state.oil);
+  } catch(e) { console.warn('Market quote error:', e.message); }
+}
+async function refreshMarketCharts() {
+  try { state.forex.history = await fetchMarketChart('USDKRW=X'); }
+  catch(e) { console.warn('Forex chart:', e.message); }
+  try { state.oil.history = await fetchMarketChart('CL=F'); }
+  catch(e) { console.warn('Oil chart:', e.message); }
+  drawCombinedGraph();
+}
+
+// --------- Render ---------
+function makeCard(stock){
+  const el = document.createElement('div');
+  el.className = 'card kr';
+  el.dataset.ticker = stock.ticker;
+  el.dataset.market = 'kr';
+  if (stock.bgColor) el.style.background = stock.bgColor;
+  el.innerHTML = `
+    <div class="card-header">
+      <div class="card-name">${escapeHtml(stock.name || stock.ticker)}</div>
+      <div class="card-ticker">${escapeHtml(stock.ticker)}</div>
+    </div>
+    <div class="card-price">—</div>
+    <div class="card-change">—</div>
+    <canvas class="card-graph"></canvas>
+    <div class="card-meta">
+      <span>PER <b class="pp-per">—</b></span>
+      <span>ROE <b class="pp-roe">—</b></span>
+    </div>
+    <div class="card-indicators">
+      <span>MACD <b class="pp-macd">—</b></span>
+      <span>RSI <b class="pp-rsi">—</b></span>
+    </div>
+    <div class="card-foreign">외국인 <b class="pp-frgn0">—</b> / <b class="pp-frgn1">—</b></div>
+    <div class="card-past"></div>
+  `;
+  attachCardEvents(el, stock.ticker);
+  return el;
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function renderGrids(){
+  const container = $('#grid-kr');
+  container.innerHTML = '';
+  state.stocks.kr.forEach(s => container.appendChild(makeCard(s)));
+  state.stocks.kr.forEach(s => renderCardFull(s.ticker));
+}
+function findStock(ticker){ return state.stocks.kr.find(s=>s.ticker===ticker); }
+function findCard(ticker){ return document.querySelector(`.card[data-ticker="${cssEsc(ticker)}"]`); }
+function cssEsc(t){ return String(t).replace(/(["\\])/g, '\\$1'); }
+
+function renderCardPrice(ticker){
+  const card = findCard(ticker); if (!card) return;
+  const p = state.prices[ticker]; if (!p) return;
+  const priceEl = card.querySelector('.card-price');
+  const changeEl = card.querySelector('.card-change');
+  if (p.price != null){
+    priceEl.textContent = fmtNum(p.price, 0);
+    if (p.prevClose){
+      const diff = p.price - p.prevClose;
+      const pct = (diff / p.prevClose) * 100;
+      priceEl.className = 'card-price ' + (diff > 0 ? 'up' : diff < 0 ? 'down' : '');
+      changeEl.className = 'card-change ' + (diff > 0 ? 'up' : diff < 0 ? 'down' : '');
+      const sign = diff > 0 ? '▲' : diff < 0 ? '▼' : '·';
+      changeEl.textContent = `${sign} ${fmtNum(Math.abs(diff), 0)} (${fmtPct(pct)})`;
+    } else {
+      changeEl.textContent = '—';
+    }
+  }
+}
+function renderCardFull(ticker){
+  const card = findCard(ticker); if (!card) return;
+  const p = state.prices[ticker] || {};
+  const stock = findStock(ticker); if (!stock) return;
+  card.querySelector('.pp-per').textContent = (p.per != null) ? fmtNum(p.per, 2) : '—';
+  card.querySelector('.pp-roe').textContent = (p.roe != null) ? (fmtNum(p.roe, 2) + '%') : '—';
+  // MACD
+  const macdEl = card.querySelector('.pp-macd');
+  if (macdEl) {
+    const v = p.macd;
+    macdEl.textContent = v != null ? (v >= 0 ? '+' : '') + fmtNum(v, 1) : '—';
+    macdEl.className = v != null ? (v > 0 ? 'up' : v < 0 ? 'down' : '') : '';
+  }
+  // RSI
+  const rsiEl = card.querySelector('.pp-rsi');
+  if (rsiEl) {
+    const v = p.rsi;
+    rsiEl.textContent = v != null ? String(v) : '—';
+    rsiEl.className = v != null ? (v >= 70 ? 'overbought' : v <= 30 ? 'oversold' : '') : '';
+  }
+  // Foreign net buy — 2 most recent days from daily history
+  const fmtFrgn = (v) => {
+    if (v == null || isNaN(v)) return '—';
+    const b = document.createElement('b');
+    b.textContent = (v >= 0 ? '+' : '') + fmtNum(v, 0);
+    b.className = v > 0 ? 'buy' : v < 0 ? 'sell' : '';
+    return b;
+  };
+  const f0El = card.querySelector('.pp-frgn0');
+  const f1El = card.querySelector('.pp-frgn1');
+  if (f0El && p.frgnRecent) {
+    const b = fmtFrgn(p.frgnRecent[0]);
+    f0El.replaceWith(b); b.className += ' pp-frgn0'; // keep class for next update
+  }
+  if (f1El && p.frgnRecent) {
+    const b = fmtFrgn(p.frgnRecent[1]);
+    f1El.replaceWith(b); b.className += ' pp-frgn1';
+  }
+  const past = card.querySelector('.card-past');
+  past.innerHTML = '';
+  (stock.past || []).forEach(key => {
+    const opt = pastByKey(key);
+    const val = (p.pastCloses && p.pastCloses[key] != null) ? p.pastCloses[key] : null;
+    const span = document.createElement('span');
+    span.className = 'pp';
+    span.innerHTML = opt.label.split(' ')[0] + ': <b>' + (val != null ? fmtNum(val, 0) : '—') + '</b>';
+    past.appendChild(span);
+  });
+  renderCardPrice(ticker);
+}
+
+const _graphDebounce = {};
+function drawCardGraph(card, p){
+  const ticker = card.dataset.ticker;
+  clearTimeout(_graphDebounce[ticker]);
+  _graphDebounce[ticker] = setTimeout(() => {
+    const canvas = card.querySelector('.card-graph'); if (!canvas) return;
+    if (!p.history || p.history.length < 2){ const ctx=canvas.getContext('2d'); if(canvas.width>0) ctx.clearRect(0,0,canvas.width,canvas.height); return; }
+    const graphColor = p.prevClose ? (p.price > p.prevClose ? '#d92d20' : p.price < p.prevClose ? '#1d4ed8' : '#374151') : '#374151';
+    drawLineGraph(canvas, p.history, p.prevClose, { lineColor: graphColor });
+  }, 150);
+}
+function drawLineGraph(canvas, history, refLine, opts={}){
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  if (canvas.width !== rect.width*dpr || canvas.height !== rect.height*dpr){
+    canvas.width = rect.width*dpr; canvas.height = rect.height*dpr;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const W = rect.width, H = rect.height;
+  ctx.clearRect(0,0,W,H);
+  if (!history || history.length < 2) return;
+  const tSpan = history[history.length-1].t - history[0].t;
+  const isDailyData = tSpan > 12*3600*1000 && (history.length < 3 || (history[1].t - history[0].t) > 3600*1000);
+  const defaultWindow = isDailyData ? tSpan + 1000 : 6.5*3600*1000;
+  const windowMs = opts.windowMs ? (isDailyData ? Math.max(opts.windowMs, tSpan+1000) : opts.windowMs) : defaultWindow;
+  const tNow = history[history.length-1].t;
+  const data = history.filter(p => (tNow - p.t) <= windowMs);
+  if (data.length < 2) return;
+  const ts = data.map(p=>p.t), vs = data.map(p=>p.v);
+  const tMin=ts[0], tMax=ts[ts.length-1];
+  const vMin=Math.min(...vs, refLine?refLine:Infinity), vMax=Math.max(...vs, refLine?refLine:-Infinity);
+  const pad=(vMax-vMin)*0.08||1, lo=vMin-pad, hi=vMax+pad;
+  const x = t => (tMax===tMin ? W : ((t-tMin)/(tMax-tMin))*W);
+  const y = v => H - ((v-lo)/(hi-lo))*H;
+  if (refLine){
+    ctx.strokeStyle='#d1d5db'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(0,y(refLine)); ctx.lineTo(W,y(refLine)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.lineWidth=1.5;
+  const last=data[data.length-1].v;
+  ctx.strokeStyle=opts.lineColor||(refLine?(last>refLine?'#d92d20':last<refLine?'#1d4ed8':'#374151'):'#374151');
+  ctx.beginPath();
+  data.forEach((p,i)=>{ const X=x(p.t),Y=y(p.v); if(i===0) ctx.moveTo(X,Y); else ctx.lineTo(X,Y); });
+  ctx.stroke();
+}
+
+// --------- Card events ---------
+function attachCardEvents(el, ticker){
+  el.addEventListener('contextmenu', (e) => { e.preventDefault(); openGridSettings(ticker); });
+  el.addEventListener('dblclick', () => openDetail(ticker));
+  let touchStartT=0, touchStartY=0, touchStartX=0, longPressTimer=null, touchMoved=false;
+  el.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    touchStartT=Date.now(); touchStartY=t.clientY; touchStartX=t.clientX; touchMoved=false;
+    longPressTimer = setTimeout(()=>{ if(!touchMoved){ openGridSettings(ticker); if(navigator.vibrate) navigator.vibrate(30); } }, 550);
+  }, {passive:true});
+  el.addEventListener('touchmove', (e) => {
+    if (e.touches.length !== 1) return;
+    const t=e.touches[0], dx=t.clientX-touchStartX, dy=t.clientY-touchStartY;
+    if (Math.abs(dx)>8||Math.abs(dy)>8){ touchMoved=true; clearTimeout(longPressTimer); }
+  }, {passive:true});
+  el.addEventListener('touchend', (e) => {
+    clearTimeout(longPressTimer);
+    const dur=Date.now()-touchStartT, t=e.changedTouches[0];
+    const dx=t.clientX-touchStartX, dy=t.clientY-touchStartY;
+    if (dy<-50&&Math.abs(dx)<40&&dur<600) openDetail(ticker);
+  });
+}
+
+// --------- Global Settings ---------
+function openGlobalSettings(){
+  $('#gs-kis-key').value    = state.settings.kisKey;
+  $('#gs-kis-secret').value = state.settings.kisSecret;
+  $('#gs-kis-env').value    = state.settings.kisEnv;
+  $('#gs-refresh').value    = state.settings.refreshSec;
+  $('#gs-proxy').value      = state.settings.proxyUrl;
+  $('#globalSettingsModal').classList.add('open');
+}
+function closeGlobalSettings(){ $('#globalSettingsModal').classList.remove('open'); }
+async function saveGlobalSettings(){
+  state.settings.kisKey     = $('#gs-kis-key').value.trim();
+  state.settings.kisSecret  = $('#gs-kis-secret').value.trim();
+  state.settings.kisEnv     = $('#gs-kis-env').value;
+  state.settings.refreshSec = Math.max(0.25, Math.min(10, +$('#gs-refresh').value || 0.25));
+  state.settings.proxyUrl   = $('#gs-proxy').value.trim();
+  closeGlobalSettings();
+  await saveSettings();
+  state.kisToken = null;
+  state.kisLastTokenAt = 0;
+  state.settings.kisTokenData = null;
+  startPolling();
+}
+
+// --------- Grid Settings ---------
+let psEditingTicker = null;
+function openGridSettings(ticker){
+  const stock = findStock(ticker); if (!stock) return;
+  psEditingTicker = ticker;
+  $('#ps-title').textContent = stock.name + ' (' + ticker + ')';
+  $('#ps-ticker').value = stock.ticker;
+  $('#ps-name').value = stock.name;
+  $('#ps-bgcolor').value = stock.bgColor || '#ffffff';
+  for (let i=0;i<4;i++){
+    const sel = document.querySelector(`#gridSettingsModal select[data-past-idx="${i}"]`);
+    sel.innerHTML = PAST_OPTIONS.map(o=>`<option value="${o.key}">${escapeHtml(o.label)}</option>`).join('');
+    sel.value = stock.past?.[i] || PAST_OPTIONS[i].key;
+  }
+  $('#gridSettingsModal').classList.add('open');
+}
+function closeGridSettings(){ $('#gridSettingsModal').classList.remove('open'); }
+async function saveGridSettings(){
+  if (!psEditingTicker) return;
+  const stock = findStock(psEditingTicker); if (!stock) return;
+  const newTicker  = $('#ps-ticker').value.trim();
+  const newName    = $('#ps-name').value.trim() || newTicker;
+  const newBgColor = $('#ps-bgcolor').value === '#ffffff' ? '' : $('#ps-bgcolor').value;
+  const past = [];
+  for (let i=0;i<4;i++) past.push(document.querySelector(`#gridSettingsModal select[data-past-idx="${i}"]`).value);
+  stock.ticker  = newTicker;
+  stock.name    = newName;
+  stock.past    = past;
+  stock.bgColor = newBgColor;
+  delete state.prices[psEditingTicker];
+  closeGridSettings();
+  await saveSettings();
+  renderGrids();
+  refreshHistoricalAll();
+  pollOnce();
+}
+
+// --------- Detail view ---------
+function openDetail(ticker){
+  state.detailTicker = ticker;
+  const stock = findStock(ticker);
+  $('#dv-title').textContent = stock.name;
+  $('#dv-sub').textContent = ticker + ' · KOSPI';
+  const past = state.detailPast || ['1d','2d','3d','5d','1w','2w','1m','3m'];
+  state.detailPast = past;
+  const grid = $('#dv-past'); grid.innerHTML='';
+  for (let i=0;i<8;i++){
+    const cell = document.createElement('div'); cell.className='past-cell';
+    const cur = past[i] || PAST_OPTIONS[i % PAST_OPTIONS.length].key;
+    cell.innerHTML = `
+      <div class="past-label">${escapeHtml(pastByKey(cur).label)}</div>
+      <div class="past-val">—</div>
+      <select>${PAST_OPTIONS.map(o=>`<option value="${o.key}">${escapeHtml(o.label)}</option>`).join('')}</select>
+    `;
+    const sel=cell.querySelector('select'); sel.value=cur;
+    sel.addEventListener('change', () => {
+      state.detailPast[i]=sel.value;
+      cell.querySelector('.past-label').textContent=pastByKey(sel.value).label;
+      renderDetailLive(); saveSettings();
+    });
+    grid.appendChild(cell);
+  }
+  $('#detailView').classList.add('open');
+  renderDetailLive();
+  if (state.detailGraphHandle) cancelAnimationFrame(state.detailGraphHandle);
+  const loop = () => {
+    if (state.detailTicker !== ticker) return;
+    renderDetailLive();
+    state.detailGraphHandle = requestAnimationFrame(loop);
+  };
+  loop();
+}
+function closeDetail(){
+  state.detailTicker = null;
+  $('#detailView').classList.remove('open');
+  if (state.detailGraphHandle) cancelAnimationFrame(state.detailGraphHandle);
+}
+function renderDetailLive(){
+  if (!state.detailTicker) return;
+  const t = state.detailTicker;
+  const p = state.prices[t] || {};
+  $('#dv-price').textContent = p.price != null ? fmtNum(p.price, 0) : '—';
+  if (p.price != null && p.prevClose){
+    const diff=p.price-p.prevClose, pct=diff/p.prevClose*100;
+    const sign=diff>0?'▲':diff<0?'▼':'·', cls=diff>0?'up':diff<0?'down':'';
+    $('#dv-price').className='detail-price '+cls;
+    $('#dv-change').className='card-change '+cls;
+    $('#dv-change').textContent=`${sign} ${fmtNum(Math.abs(diff),0)} (${fmtPct(pct)})`;
+  }
+  const canvas=$('#dv-graph');
+  if (p.history&&p.history.length>1){
+    const graphColor=p.prevClose?(p.price>p.prevClose?'#d92d20':p.price<p.prevClose?'#1d4ed8':'#374151'):'#374151';
+    drawLineGraph(canvas, p.history, p.prevClose, {windowMs:3*24*3600*1000, lineColor:graphColor});
+  } else {
+    const ctx=canvas.getContext('2d'); if(canvas.width>0) ctx.clearRect(0,0,canvas.width,canvas.height);
+  }
+  const cells=$$('#dv-past .past-cell');
+  cells.forEach((cell,i)=>{
+    const key=state.detailPast[i];
+    const val=p.pastCloses&&p.pastCloses[key];
+    cell.querySelector('.past-val').textContent=val!=null?fmtNum(val,0):'—';
+  });
+}
+
+// --------- Polling ---------
+async function pollOne(stock, attempt = 0){
+  try {
+    const q = await kisQuote(stock.ticker);
+    const ent = state.prices[stock.ticker] || (state.prices[stock.ticker] = {});
+    Object.assign(ent, q);
+    renderCardPrice(stock.ticker);  // price / change / PER / ROE only — no graph
+    if (state.detailTicker === stock.ticker) renderDetailLive();
+  } catch(e){
+    if (e.message.includes('EGW00201') && attempt < 2){
+      _kisLimiter.penalize(12000); // double gap for 12s
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1))); // 2s, 4s backoff
+      return pollOne(stock, attempt + 1);
+    }
+    console.warn('poll error', stock.ticker, e.message);
+  }
+}
+
+// Graph cycle: samples current price into history, 1.5s between stocks, every 2 min
+let _graphCycleRunning = false;
+async function tickGraphCycle(){
+  if (_graphCycleRunning) return;
+  _graphCycleRunning = true;
+  try {
+    for (let i = 0; i < state.stocks.kr.length; i++){
+      const s = state.stocks.kr[i];
+      const ent = state.prices[s.ticker];
+      if (ent && ent.price != null){
+        ent.history = ent.history || [];
+        ent.history.push({t: Date.now(), v: ent.price});
+        if (ent.history.length > 5000) ent.history = ent.history.slice(-3000);
+        const card = findCard(s.ticker);
+        if (card) drawCardGraph(card, ent);
+        if (state.detailTicker === s.ticker) renderDetailLive();
+      }
+      if (i < state.stocks.kr.length - 1)
+        await new Promise(r => setTimeout(r, 1500));
+    }
+  } finally { _graphCycleRunning = false; }
+}
+let _kisPolling = false;
+async function pollOnce(){
+  if (_kisPolling) return;
+  _kisPolling = true;
+  try { for (const s of state.stocks.kr) await pollOne(s); }
+  finally { _kisPolling = false; }
+}
+function startPolling(){
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  const sec = Math.max(0.25, state.settings.refreshSec);
+  pollOnce();
+  state.pollTimer = setInterval(pollOnce, sec * 1000);
+}
+
+// --------- Historical fetch ---------
+async function refreshHistoricalAll(){
+  for (let i = 0; i < state.stocks.kr.length; i++){
+    await refreshHistoricalOne(state.stocks.kr[i]);
+    if (i < state.stocks.kr.length - 1)
+      await new Promise(r => setTimeout(r, 2000)); // 2s gap outside limiter
+  }
+}
+async function refreshHistoricalOne(stock){
+  // Only fetches daily history for past closes / prevClose seed.
+  // PER and ROE come from kisQuote (fast poll) — not updated here.
+  try {
+    const ent = state.prices[stock.ticker] || (state.prices[stock.ticker] = {});
+    ent.pastCloses = ent.pastCloses || {};
+    let hist = [];
+    try {
+      for (let attempt = 0; attempt < 3; attempt++){
+        try { hist = await kisDailyHistory(stock.ticker); break; }
+        catch(e){
+          if (e.message.includes('EGW00201') && attempt < 2){
+            _kisLimiter.penalize(12000);
+            await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
+          } else { throw e; }
+        }
+      }
+    } catch(e){ hist = []; }
+    if (hist.length){
+      const allKeys = new Set([...(stock.past||[]), ...(state.detailPast||[])]);
+      allKeys.forEach(k => {
+        let idx;
+        if (['1d','2d','3d','4d','5d'].includes(k)) idx = pastByKey(k).days - 1;
+        else if (k==='1w')  idx = 4;
+        else if (k==='2w')  idx = 9;
+        else if (k==='1m')  idx = 20;
+        else if (k==='3m')  idx = 62;
+        else if (k==='6m')  idx = 125;
+        else if (k==='1y')  idx = 251;
+        else idx = pastByKey(k).days - 1;
+        const v = hist[Math.min(idx, hist.length-1)]?.close ?? null;
+        if (v != null) ent.pastCloses[k] = v;
+      });
+      if (ent.prevClose == null) ent.prevClose = hist[0].close;
+      if (!isMarketKR_open() && ent.price == null) ent.price = hist[0].close;
+      if (!ent.history || ent.history.length < 2){
+        ent.history = dailyHistoryToGraphPoints(hist);
+        if (!ent.price) ent.price = hist[0].close;
+      }
+      ent.macd = calcMACD(hist);
+      ent.rsi  = calcRSI(hist);
+      ent.frgnRecent = hist.slice(0, 2).map(h => h.frgnNetBuy);
+    }
+    renderCardFull(stock.ticker);
+    if (state.detailTicker === stock.ticker) renderDetailLive();
+  } catch(e){ console.warn('historical', stock.ticker, e.message); }
+}
+
+// --------- Init ---------
+async function init(){
+  $('#globalSettingsBtn').addEventListener('click', openGlobalSettings);
+  $('#gs-cancel').addEventListener('click', closeGlobalSettings);
+  $('#gs-save').addEventListener('click', saveGlobalSettings);
+  $('#ps-cancel').addEventListener('click', closeGridSettings);
+  $('#ps-save').addEventListener('click', saveGridSettings);
+  $('#dv-close').addEventListener('click', closeDetail);
+  $('#dv-settings').addEventListener('click', () => { if (state.detailTicker) openGridSettings(state.detailTicker); });
+
+  let _nameTimer = null;
+  $('#ps-ticker').addEventListener('input', () => {
+    clearTimeout(_nameTimer);
+    const ticker = $('#ps-ticker').value.trim(); if (!ticker) return;
+    _nameTimer = setTimeout(async () => {
+      $('#ps-name-loading').style.display = 'inline';
+      const name = await naverNameKR(ticker);
+      $('#ps-name-loading').style.display = 'none';
+      if (name) $('#ps-name').value = name;
+    }, 600);
+  });
+  $('#ps-bgcolor-reset').addEventListener('click', () => { $('#ps-bgcolor').value = '#ffffff'; });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape'){ closeDetail(); closeGridSettings(); closeGlobalSettings(); }
+  });
+
+  const loaded = await loadSettings();
+  if (loaded && loaded.global && loaded.stocks){
+    state.settings = Object.assign(makeDefaultGlobal(), loaded.global);
+    state.stocks.kr = (loaded.stocks.kr || []).map(s => ({
+      ...s,
+      past: s.past?.length ? s.past : ['1d','2d','3d','1w'],
+      bgColor: s.bgColor ?? '',
+    }));
+    _savedUsStocks = loaded.stocks.us || [];
+    state.detailPast = loaded.detailPast || ['1d','2d','3d','5d','1w','2w','1m','3m'];
+    state.settings.refreshSec = 0.25; // local-only, not synced from cloud
+    // Restore KIS token if still valid
+    const td = state.settings.kisTokenData;
+    if (td && td.access_token && td.expires_at > Date.now() + 60000){
+      state.kisToken = { access_token: td.access_token, expires_at: td.expires_at };
+      console.log('[KIS] Token restored, valid until', new Date(td.expires_at).toLocaleString());
+    }
+    setStatus('설정 로드 완료', 'ok');
+  } else {
+    state.settings = makeDefaultGlobal();
+    state.stocks = makeDefaultStocks();
+    _savedUsStocks = [];
+    state.detailPast = ['1d','2d','3d','5d','1w','2w','1m','3m'];
+    setStatus('기본 설정 사용 — ⚙ 에서 KIS API 키를 입력하세요');
+  }
+
+  renderGrids();
+  startPolling();
+
+  // Graph cycle: 1.5s between stocks, repeat every 1 minute
+  tickGraphCycle();
+  setInterval(tickGraphCycle, 60 * 1000);
+
+  // After 20s: let first price cycle settle before adding historical fetches
+  setTimeout(() => {
+    refreshHistoricalAll();
+    setInterval(refreshHistoricalAll, 10 * 60 * 1000); // then every 10 minutes
+  }, 20000);
+
+  // Market widgets: price every 5s, chart every 5 min
+  updateMarketPrices();
+  setInterval(updateMarketPrices, 5000);
+  refreshMarketCharts();
+  setInterval(refreshMarketCharts, 5 * 60 * 1000);
+
+  window.addEventListener('resize', () => {
+    state.stocks.kr.forEach(s => { const card=findCard(s.ticker); if(card) drawCardGraph(card, state.prices[s.ticker]||{}); });
+    if (state.detailTicker) renderDetailLive();
+    drawCombinedGraph();
+  });
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

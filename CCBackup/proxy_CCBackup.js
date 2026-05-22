@@ -19,11 +19,8 @@ const fs    = require('fs');
 const path  = require('path');
 const { URL } = require('url');
 
-const PORT     = parseInt(process.argv[2], 10) || 8081;
-const BASE_DIR = __dirname;
-
-// Static HTML files served from the project directory
-const HTML_FILES = new Set(['kor.html', 'us.html']);
+const PORT       = parseInt(process.argv[2], 10) || 8081;
+const INDEX_HTML = path.join(__dirname, 'index.html');
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin':  '*',
@@ -51,16 +48,10 @@ const server = http.createServer((req, res) => {
 
   const raw = req.url.slice(1); // strip leading /
 
-  // Root → redirect to Kor.html; *.html → serve that file
-  if (raw === '') {
-    res.writeHead(302, { ...CORS_HEADERS, 'Location': '/Kor.html' });
-    res.end();
-    return;
-  }
-  if (HTML_FILES.has(raw.toLowerCase())) {
-    const filePath = path.join(BASE_DIR, raw);
-    fs.readFile(filePath, (err, data) => {
-      if (err) { send(res, 404, raw + ' not found'); return; }
+  // Root or /index.html → serve the HTML app
+  if (raw === '' || raw === 'index.html') {
+    fs.readFile(INDEX_HTML, (err, data) => {
+      if (err) { send(res, 404, 'index.html not found'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(data);
     });
@@ -131,10 +122,9 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
   console.log('='.repeat(55));
   console.log('  Stock Monitor — proxy + app server');
-  console.log(`  KOSPI:  http://127.0.0.1:${PORT}/Kor.html`);
-  console.log(`  NASDAQ: http://127.0.0.1:${PORT}/US.html`);
+  console.log(`  Open in browser: http://127.0.0.1:${PORT}`);
   console.log('='.repeat(55));
-  console.log('  In Settings → Proxy URL:');
+  console.log('  In Global Settings → Proxy URL:');
   console.log(`    http://127.0.0.1:${PORT}`);
   console.log('='.repeat(55));
   console.log('  Press Ctrl+C to stop.\n');

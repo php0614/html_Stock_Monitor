@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Stock Monitor — NASDAQ</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #fafafa;
+    --bg-card: #ffffff;
+    --border: #e5e7eb;
+    --text: #111;
+    --text-muted: #6b7280;
+    --up: #d92d20;
+    --down: #1d4ed8;
+    --flat: #6b7280;
+    --primary: #3b82f6;
+    --primary-hover: #2563eb;
+    --secondary: #e5e7eb;
+    --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-lg: 0 10px 30px rgba(0,0,0,0.12);
+    --font-stack: "Helvetica Neue", Helvetica, "Noto Sans KR", Arial, sans-serif;
+    --mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: var(--font-stack);
+    background: var(--bg-soft);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 50;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  header .right { display: flex; gap: 8px; align-items: center; }
+  #statusBar { font-size: 12px; color: var(--text-muted); margin-right: 8px; }
+  #statusBar.error { color: var(--up); }
+  #statusBar.ok { color: #059669; }
+  .icon-btn {
+    width: 34px; height: 34px; border: 1px solid var(--border);
+    border-radius: 8px; background: #fff; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+  .icon-btn:hover { background: #f3f4f6; }
+  main { padding: 10px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+  }
+  @media (min-width: 1400px) { .grid { grid-template-columns: repeat(8, 1fr); } }
+  @media (max-width: 480px) {
+    .grid { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    main { padding: 6px; }
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    box-shadow: var(--shadow);
+    transition: border-color .15s ease;
+    position: relative;
+    min-height: 130px;
+    display: flex; flex-direction: column;
+  }
+  .card:hover { border-color: #cbd5e1; }
+  .card.us::before {
+    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    border-top-left-radius: 10px; border-top-right-radius: 10px;
+    background: #2563eb;
+  }
+  .card-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; gap: 6px; }
+  .card-name { font-weight: 600; font-size: 13px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-ticker { font-family: var(--mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+  .card-price { font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; margin: 2px 0; }
+  .card-price.up { color: var(--up); }
+  .card-price.down { color: var(--down); }
+  .card-change { font-family: var(--mono); font-size: 11px; }
+  .card-change.up { color: var(--up); }
+  .card-change.down { color: var(--down); }
+  .card-meta { display: flex; gap: 8px; margin-top: 6px; font-size: 10px; color: var(--text-muted); }
+  .card-meta span b { color: var(--text); font-weight: 600; }
+  .card-graph { margin-top: 6px; width: 100%; height: 36px; background: #fafafa; border-radius: 4px; }
+  .card-past { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 6px; font-size: 10px; }
+  .card-past .pp { color: var(--text-muted); }
+  .card-past .pp b { color: var(--text); font-family: var(--mono); }
+
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    display: none; align-items: center; justify-content: center;
+    z-index: 200; padding: 16px;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: #fff; border-radius: 12px;
+    padding: 18px; min-width: 320px; max-width: 520px; width: 100%;
+    max-height: 90vh; overflow-y: auto;
+    box-shadow: var(--shadow-lg);
+  }
+  .modal h2 { margin: 0 0 12px 0; font-size: 16px; font-weight: 600; }
+  .modal-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+  .modal-row label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+  .modal-row input, .modal-row select {
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+    font-family: var(--font-stack); font-size: 13px; background: #fff;
+  }
+  .modal-row input[type="text"], .modal-row input[type="password"] { font-family: var(--mono); }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  .btn { padding: 8px 14px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; font-family: var(--font-stack); font-size: 13px; font-weight: 500; }
+  .btn.primary { background: var(--primary); color: #fff; }
+  .btn.primary:hover { background: var(--primary-hover); }
+  .btn.primary:disabled { background: #93c5fd; cursor: not-allowed; }
+  .btn.secondary { background: var(--secondary); color: var(--text); }
+  .btn.secondary:hover { background: #d1d5db; }
+
+  #detailView {
+    position: fixed; inset: 0; background: #fff; z-index: 300;
+    display: none; flex-direction: column; overflow-y: auto;
+  }
+  #detailView.open { display: flex; }
+  #detailView .detail-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: #fff; z-index: 1;
+  }
+  #detailView .detail-title { font-size: 18px; font-weight: 600; }
+  #detailView .detail-sub { font-size: 12px; color: var(--text-muted); font-family: var(--mono); }
+  #detailView .detail-body { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  #detailView .detail-price { font-family: var(--mono); font-size: 36px; font-weight: 700; }
+  #detailView .detail-graph { width: 100%; height: 320px; background: #fafafa; border-radius: 8px; border: 1px solid var(--border); }
+  #detailView .past-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  #detailView .past-cell { background: var(--bg-soft); border: 1px solid var(--border); padding: 10px; border-radius: 6px; }
+  #detailView .past-cell .past-label { font-size: 11px; color: var(--text-muted); }
+  #detailView .past-cell .past-val { font-family: var(--mono); font-size: 16px; font-weight: 600; margin-top: 2px; }
+  #detailView .past-cell select { width: 100%; margin-top: 6px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; font-size: 11px; }
+  @media (max-width: 480px) {
+    #detailView .detail-graph { height: 200px; }
+    #detailView .detail-price { font-size: 28px; }
+  }
+
+  #toast {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: #111; color: #fff; padding: 8px 14px; border-radius: 6px;
+    font-size: 12px; opacity: 0; transition: opacity .2s; z-index: 1000;
+    pointer-events: none; max-width: 90vw;
+  }
+  #toast.show { opacity: 1; }
+  #toast.error { background: #b91c1c; }
+  #toast.ok    { background: #059669; }
+
+  .section-label { font-size: 11px; color: var(--text-muted); margin: 12px 4px 6px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+  .note { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+  .past-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .past-row select { flex: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Stock Monitor — NASDAQ</h1>
+  <div class="right">
+    <span id="statusBar">Loading…</span>
+    <button class="icon-btn" id="globalSettingsBtn" title="Settings">⚙</button>
+  </div>
+</header>
+
+<main>
+  <div class="section-label">NASDAQ · US (16)</div>
+  <section id="grid-us" class="grid"></section>
+</main>
+
+<!-- Global Settings Modal -->
+<div class="modal-backdrop" id="globalSettingsModal">
+  <div class="modal">
+    <h2>Settings — NASDAQ</h2>
+    <div class="modal-row">
+      <label>Finnhub API Key</label>
+      <input id="gs-finnhub-key" type="password" autocomplete="off" />
+      <div class="note">Free signup at finnhub.io → get API Key. WebSocket delivers real-time prices.</div>
+    </div>
+    <div class="modal-row">
+      <label>Proxy URL (optional, for CORS bypass)</label>
+      <input id="gs-proxy" type="text" placeholder="e.g. https://my-proxy.workers.dev" />
+      <div class="note">Leave blank to call APIs directly. Set a Cloudflare Worker URL if Yahoo Finance is CORS-blocked.</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" id="gs-cancel">Cancel</button>
+      <button class="btn primary" id="gs-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Per-grid Settings Modal -->
+<div class="modal-backdrop" id="gridSettingsModal">
+  <div class="modal">
+    <h2>Stock Settings — <span id="ps-title"></span></h2>
+    <div class="modal-row">
+      <label>Ticker Symbol</label>
+      <input id="ps-ticker" type="text" />
+      <div class="note">NASDAQ symbol, e.g. AAPL</div>
+    </div>
+    <div class="modal-row">
+      <label>Display Name (optional) <span id="ps-name-loading" style="font-size:10px;color:#6b7280;display:none">Looking up…</span></label>
+      <input id="ps-name" type="text" />
+    </div>
+    <div class="modal-row">
+      <label>Card Background Color</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="ps-bgcolor" type="color" value="#ffffff" style="width:40px;height:32px;border:1px solid #e5e7eb;border-radius:6px;padding:2px;cursor:pointer" />
+        <button type="button" class="btn secondary" id="ps-bgcolor-reset" style="padding:4px 10px;font-size:12px">Reset to default</button>
+      </div>
+    </div>
+    <div class="modal-row">
+      <label>Past Close Prices (4 slots)</label>
+      <div class="past-row"><span>1:</span><select data-past-idx="0"></select></div>
+      <div class="past-row"><span>2:</span><select data-past-idx="1"></select></div>
+      <div class="past-row"><span>3:</span><select data-past-idx="2"></select></div>
+      <div class="past-row"><span>4:</span><select data-past-idx="3"></select></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" id="ps-cancel">Cancel</button>
+      <button class="btn primary" id="ps-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Detail Full-screen View -->
+<div id="detailView">
+  <div class="detail-header">
+    <div>
+      <div class="detail-title" id="dv-title">—</div>
+      <div class="detail-sub" id="dv-sub">—</div>
+    </div>
+    <div style="display:flex;gap:6px;">
+      <button class="icon-btn" id="dv-settings" title="Settings">⚙</button>
+      <button class="icon-btn" id="dv-close" title="Close">✕</button>
+    </div>
+  </div>
+  <div class="detail-body">
+    <div class="detail-price" id="dv-price">—</div>
+    <div id="dv-change" class="card-change">—</div>
+    <canvas class="detail-graph" id="dv-graph"></canvas>
+    <div>
+      <div class="section-label">Past Closes (8 slots, individually configurable)</div>
+      <div class="past-grid" id="dv-past"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ============================================================
+// Stock Monitor — NASDAQ only (US.html)
+// ============================================================
+
+const SUPABASE_URL = 'https://upqnxyllnenivehmallp.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_o7KDz58nXdjLN7TwOw2Xhg_VBWzOccH';
+const BUCKET       = 'csv-data';
+const DATA_FILE    = 'stock_pl_settings.csv';
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const DEFAULT_NASDAQ = [
+  {ticker:'AAPL',  name:'Apple'},
+  {ticker:'MSFT',  name:'Microsoft'},
+  {ticker:'NVDA',  name:'NVIDIA'},
+  {ticker:'GOOGL', name:'Alphabet'},
+  {ticker:'AMZN',  name:'Amazon'},
+  {ticker:'META',  name:'Meta'},
+  {ticker:'TSLA',  name:'Tesla'},
+  {ticker:'AVGO',  name:'Broadcom'},
+  {ticker:'COST',  name:'Costco'},
+  {ticker:'NFLX',  name:'Netflix'},
+  {ticker:'AMD',   name:'AMD'},
+  {ticker:'ADBE',  name:'Adobe'},
+  {ticker:'PEP',   name:'PepsiCo'},
+  {ticker:'CSCO',  name:'Cisco'},
+  {ticker:'INTC',  name:'Intel'},
+  {ticker:'QCOM',  name:'Qualcomm'},
+];
+
+const PAST_OPTIONS = [
+  {key:'1d',  label:'1 day ago (yesterday)', days:1},
+  {key:'2d',  label:'2 days ago',            days:2},
+  {key:'3d',  label:'3 days ago',            days:3},
+  {key:'4d',  label:'4 days ago',            days:4},
+  {key:'5d',  label:'5 days ago',            days:5},
+  {key:'1w',  label:'1 week ago',            days:7},
+  {key:'2w',  label:'2 weeks ago',           days:14},
+  {key:'1m',  label:'1 month ago',           days:30},
+  {key:'3m',  label:'3 months ago',          days:90},
+  {key:'6m',  label:'6 months ago',          days:180},
+  {key:'1y',  label:'1 year ago',            days:365},
+];
+function pastByKey(k){ return PAST_OPTIONS.find(p=>p.key===k) || PAST_OPTIONS[0]; }
+
+// App state
+const state = {
+  settings: null,
+  stocks: { us: [] },
+  prices: {},
+  marketActivity: {},
+  finnhubWs: null,
+  detailTicker: null,
+  detailPast: null,
+  detailGraphHandle: null,
+  detailPollTimer: null,
+};
+
+// Saved KR stocks from CSV — preserved on every save so Kor.html data isn't wiped
+let _savedKrStocks = [];
+
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+function setStatus(text, kind=''){
+  const el = $('#statusBar');
+  el.textContent = text;
+  el.className = kind;
+}
+function toast(msg, kind=''){
+  const el = $('#toast');
+  el.textContent = msg;
+  el.className = 'show ' + kind;
+  clearTimeout(el._t);
+  el._t = setTimeout(()=>{ el.className = ''; }, 2400);
+}
+function fmtNum(n, decimals){
+  if (n == null || isNaN(n)) return '—';
+  if (decimals == null) decimals = (n >= 1000 ? 0 : 2);
+  return Number(n).toLocaleString('en-US', {minimumFractionDigits:decimals, maximumFractionDigits:decimals});
+}
+function fmtPct(n){
+  if (n == null || isNaN(n)) return '—';
+  const sign = n > 0 ? '+' : '';
+  return sign + Number(n).toFixed(2) + '%';
+}
+function isMarketUS_open(now=new Date()){
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', weekday:'short', hour:'2-digit', minute:'2-digit', hourCycle:'h23'
+    }).formatToParts(now);
+    const map = {};
+    for (const p of parts) if (p.type !== 'literal') map[p.type] = p.value;
+    const weekday = map.weekday;
+    if (weekday === 'Sun' || weekday === 'Sat') return false;
+    const mins = Number(map.hour)*60 + Number(map.minute);
+    return mins >= 570 && mins < 960; // 09:30–16:00 ET
+  } catch(e){ return false; }
+}
+
+// --------- Supabase load/save ---------
+async function loadSettings(){
+  setStatus('Loading settings…');
+  try {
+    const { data: { publicUrl } } = sb.storage.from(BUCKET).getPublicUrl(DATA_FILE);
+    const r = await fetch(publicUrl + '?t=' + Date.now(), {
+      cache:'no-store', headers:{'Cache-Control':'no-cache, no-store'}
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return parseSettingsCSV(await r.text());
+  } catch(e){
+    console.warn('Settings load failed, using defaults:', e);
+    return null;
+  }
+}
+function parseSettingsCSV(txt){
+  const lines = txt.split(/\r?\n/).filter(l=>l.length);
+  if (lines.length < 2) return null;
+  for (let i=1; i<lines.length; i++){
+    const line = lines[i];
+    const idx = line.indexOf(',');
+    if (idx < 0) continue;
+    const key = line.slice(0, idx).trim().replace(/^"|"$/g,'');
+    if (key !== 'config') continue;
+    let combined = line.slice(idx+1);
+    let j = i;
+    while (j+1 < lines.length && !rfc4180Balanced(combined)){ j++; combined += '\n' + lines[j]; }
+    combined = combined.trim();
+    if (combined.startsWith('"') && combined.endsWith('"'))
+      combined = combined.slice(1,-1).replace(/""/g,'"');
+    try { return JSON.parse(combined); } catch(e){ return null; }
+  }
+  return null;
+}
+function rfc4180Balanced(s){ let c=0; for(let k=0;k<s.length;k++) if(s[k]==='"') c++; return c%2===0; }
+async function uploadSettingsCSV(payload){
+  const json    = JSON.stringify(payload);
+  const escaped = '"' + json.replace(/"/g,'""') + '"';
+  const csv     = 'key,value\nconfig,' + escaped + '\n';
+  const blob    = new Blob([csv], {type:'text/csv'});
+  const { error } = await sb.storage.from(BUCKET).upload(DATA_FILE, blob, {upsert:true, contentType:'text/csv'});
+  if (error) throw error;
+}
+function buildSettingsPayload(){
+  // Preserve KR stocks so Kor.html data isn't wiped
+  return { version:1, global: state.settings, stocks: { kr: _savedKrStocks, us: state.stocks.us }, detailPast: state.detailPast };
+}
+async function saveSettings(){
+  setStatus('Saving…');
+  try {
+    await uploadSettingsCSV(buildSettingsPayload());
+    setStatus('Saved', 'ok');
+    toast('Settings saved', 'ok');
+  } catch(e){
+    console.error(e);
+    setStatus('Save failed: ' + e.message, 'error');
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+function makeDefaultStocks(){
+  return { us: DEFAULT_NASDAQ.map(s => ({...s, past:['1d','2d','3d','1w'], bgColor:''})) };
+}
+function makeDefaultGlobal(){
+  return {
+    kisKey: '', kisSecret: '', kisEnv: 'real',  // preserved so Kor.html keeps its keys
+    finnhubKey: '',
+    refreshSec: 1, proxyUrl: '',
+    kisTokenData: null,
+  };
+}
+
+// --------- withProxy helper ---------
+function withProxy(url){
+  const p = state.settings.proxyUrl;
+  if (!p) return url;
+  return p.endsWith('/') ? p + url : p + '/' + url;
+}
+
+// --------- Finnhub ---------
+async function finnhubQuote(ticker){
+  const k = state.settings.finnhubKey;
+  if (!k) throw new Error('Finnhub API Key not set');
+  const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}&token=${encodeURIComponent(k)}`;
+  const r = await fetch(withProxy(url));
+  if (!r.ok) throw new Error('Finnhub quote failed: ' + r.status);
+  const j = await r.json();
+  return { price: j.c, prevClose: j.pc, open: j.o, high: j.h, low: j.l };
+}
+async function finnhubMetrics(ticker){
+  const k = state.settings.finnhubKey; if (!k) return { per:null, roe:null };
+  try {
+    const url = `https://finnhub.io/api/v1/stock/metric?symbol=${encodeURIComponent(ticker)}&metric=all&token=${encodeURIComponent(k)}`;
+    const r = await fetch(withProxy(url));
+    if (!r.ok) return { per:null, roe:null };
+    const j = await r.json();
+    const m = j.metric || {};
+    return { per: m.peTTM ?? m.peBasicExclExtraTTM ?? null, roe: m.roeTTM ?? m.roeRfy ?? null };
+  } catch(e){ return { per:null, roe:null }; }
+}
+
+async function fetchStockName(ticker){
+  const k = state.settings.finnhubKey; if (!k) return null;
+  try {
+    const r = await fetch(withProxy(`https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}&token=${encodeURIComponent(k)}`));
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j.name || null;
+  } catch(e){ return null; }
+}
+
+// --------- Yahoo Finance (US daily history) ---------
+async function yahooFetchChart(symbol, params){
+  const qs = new URLSearchParams(params).toString();
+  if (state.settings.proxyUrl){
+    const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?${qs}`;
+    const r = await fetch(withProxy(url), {cache:'no-store', headers:{Accept:'application/json'}});
+    if (!r.ok) throw new Error('Yahoo proxy ' + r.status);
+    const j = await r.json();
+    const res = j.chart?.result?.[0]; if (!res) throw new Error('Yahoo proxy no result');
+    return res;
+  }
+  for (const host of ['query2', 'query1']){
+    try {
+      const url = `https://${host}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?${qs}`;
+      const r = await fetch(url, {cache:'no-store', headers:{Accept:'application/json'}});
+      if (!r.ok) continue;
+      const j = await r.json();
+      const res = j.chart?.result?.[0]; if (res) return res;
+    } catch(e){}
+  }
+  throw new Error('Yahoo CORS — set a Proxy URL in Settings');
+}
+async function yahooHistoryUS(ticker, days=130){
+  try {
+    const end = Math.floor(Date.now()/1000), start = end - days*86400;
+    const res = await yahooFetchChart(ticker, {interval:'1d', period1:start, period2:end});
+    const ts = res.timestamp || [], closes = res.indicators?.quote?.[0]?.close || [];
+    return ts.map((t,i)=>({date:new Date(t*1000).toISOString().slice(0,10).replace(/-/g,''), close:closes[i]}))
+      .filter(x=>x.close!=null&&x.close>0).reverse();
+  } catch(e){ return []; }
+}
+
+function dailyHistoryToGraphPoints(hist, numDays=60){
+  const days = hist.slice(0, numDays).reverse();
+  const now = Date.now();
+  return days.map((h,i) => ({ t: now - (days.length-1-i)*86400*1000, v: h.close }));
+}
+
+// --------- Finnhub WebSocket ---------
+let _wsFails = 0;
+function finnhubWsConnect(){
+  if (state.finnhubWs){ try { state.finnhubWs.close(); } catch(e){} state.finnhubWs = null; }
+  const k = state.settings.finnhubKey; if (!k) return;
+  const ws = new WebSocket('wss://ws.finnhub.io?token=' + encodeURIComponent(k));
+  state.finnhubWs = ws;
+  ws.addEventListener('open', () => {
+    _wsFails = 0;
+    state.stocks.us.forEach(s => ws.send(JSON.stringify({type:'subscribe', symbol:s.ticker})));
+  });
+  ws.addEventListener('message', (ev) => {
+    try {
+      const m = JSON.parse(ev.data);
+      if (m.type === 'trade' && Array.isArray(m.data)){
+        m.data.forEach(t => {
+          const sym=t.s, px=t.p, ts=t.t;
+          const ent = state.prices[sym] || (state.prices[sym] = {});
+          ent.price = px;
+          let activity = state.marketActivity[sym];
+          if (!activity) activity = state.marketActivity[sym] = {initialPrice:px, checks:0, active:false, stopped:false};
+          if (!activity.stopped){
+            activity.checks++;
+            if (px !== activity.initialPrice){ activity.active=true; activity.stopped=true; }
+            if (activity.checks >= 20) activity.stopped = true;
+          }
+          ent.history = ent.history || [];
+          if (ent.history.length===0 && ent.prevClose!=null && ent.prevClose>0)
+            ent.history.push({t:ts-60000, v:ent.prevClose});
+          ent.history.push({t:ts, v:px});
+          if (ent.history.length>5000) ent.history=ent.history.slice(-3000);
+          renderCardPrice(sym);
+          if (state.detailTicker===sym) renderDetailLive();
+        });
+      }
+    } catch(e){}
+  });
+  ws.addEventListener('close', () => {
+    if (!state.settings.finnhubKey) return;
+    _wsFails++;
+    const delay = Math.min(5000 * Math.pow(2, _wsFails-1), 120000);
+    setTimeout(() => { if (state.settings.finnhubKey) finnhubWsConnect(); }, delay);
+  });
+  ws.addEventListener('error', () => {});
+}
+
+// --------- Render ---------
+function makeCard(stock){
+  const el = document.createElement('div');
+  el.className = 'card us';
+  el.dataset.ticker = stock.ticker;
+  el.dataset.market = 'us';
+  if (stock.bgColor) el.style.background = stock.bgColor;
+  el.innerHTML = `
+    <div class="card-header">
+      <div class="card-name">${escapeHtml(stock.name || stock.ticker)}</div>
+      <div class="card-ticker">${escapeHtml(stock.ticker)}</div>
+    </div>
+    <div class="card-price">—</div>
+    <div class="card-change">—</div>
+    <canvas class="card-graph"></canvas>
+    <div class="card-meta">
+      <span>PER <b class="pp-per">—</b></span>
+      <span>ROE <b class="pp-roe">—</b></span>
+    </div>
+    <div class="card-past"></div>
+  `;
+  attachCardEvents(el, stock.ticker);
+  return el;
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function renderGrids(){
+  const container = $('#grid-us');
+  container.innerHTML = '';
+  state.stocks.us.forEach(s => container.appendChild(makeCard(s)));
+  state.stocks.us.forEach(s => renderCardFull(s.ticker));
+}
+function findStock(ticker){ return state.stocks.us.find(s=>s.ticker===ticker); }
+function findCard(ticker){ return document.querySelector(`.card[data-ticker="${cssEsc(ticker)}"]`); }
+function cssEsc(t){ return String(t).replace(/(["\\])/g, '\\$1'); }
+
+function renderCardPrice(ticker){
+  const card = findCard(ticker); if (!card) return;
+  const p = state.prices[ticker]; if (!p) return;
+  const priceEl = card.querySelector('.card-price');
+  const changeEl = card.querySelector('.card-change');
+  if (p.price != null){
+    priceEl.textContent = fmtNum(p.price, 2);
+    if (p.prevClose){
+      const diff = p.price - p.prevClose;
+      const pct = (diff/p.prevClose)*100;
+      priceEl.className = 'card-price ' + (diff>0?'up':diff<0?'down':'');
+      changeEl.className = 'card-change ' + (diff>0?'up':diff<0?'down':'');
+      const sign = diff>0?'▲':diff<0?'▼':'·';
+      changeEl.textContent = `${sign} ${fmtNum(Math.abs(diff),2)} (${fmtPct(pct)})`;
+    } else { changeEl.textContent = '—'; }
+  }
+  drawCardGraph(card, p);
+}
+function renderCardFull(ticker){
+  const card = findCard(ticker); if (!card) return;
+  const p = state.prices[ticker] || {};
+  const stock = findStock(ticker); if (!stock) return;
+  card.querySelector('.pp-per').textContent = (p.per!=null) ? fmtNum(p.per,2) : '—';
+  card.querySelector('.pp-roe').textContent = (p.roe!=null) ? (fmtNum(p.roe,2)+'%') : '—';
+  const past = card.querySelector('.card-past');
+  past.innerHTML = '';
+  (stock.past||[]).forEach(key => {
+    const opt = pastByKey(key);
+    const val = (p.pastCloses && p.pastCloses[key]!=null) ? p.pastCloses[key] : null;
+    const span = document.createElement('span');
+    span.className = 'pp';
+    span.innerHTML = opt.label.split(' ')[0] + ': <b>' + (val!=null ? fmtNum(val,2) : '—') + '</b>';
+    past.appendChild(span);
+  });
+  renderCardPrice(ticker);
+}
+
+const _graphDebounce = {};
+function drawCardGraph(card, p){
+  const ticker = card.dataset.ticker;
+  clearTimeout(_graphDebounce[ticker]);
+  _graphDebounce[ticker] = setTimeout(() => {
+    const canvas = card.querySelector('.card-graph'); if (!canvas) return;
+    if (!p.history||p.history.length<2){ const ctx=canvas.getContext('2d'); if(canvas.width>0) ctx.clearRect(0,0,canvas.width,canvas.height); return; }
+    const graphColor = p.prevClose?(p.price>p.prevClose?'#d92d20':p.price<p.prevClose?'#1d4ed8':'#374151'):'#374151';
+    drawLineGraph(canvas, p.history, p.prevClose, {lineColor:graphColor});
+  }, 150);
+}
+function drawLineGraph(canvas, history, refLine, opts={}){
+  const dpr = window.devicePixelRatio||1;
+  const rect = canvas.getBoundingClientRect();
+  if (canvas.width!==rect.width*dpr||canvas.height!==rect.height*dpr){
+    canvas.width=rect.width*dpr; canvas.height=rect.height*dpr;
+  }
+  const ctx=canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const W=rect.width, H=rect.height;
+  ctx.clearRect(0,0,W,H);
+  if (!history||history.length<2) return;
+  const tSpan=history[history.length-1].t-history[0].t;
+  const isDailyData=tSpan>12*3600*1000&&(history.length<3||(history[1].t-history[0].t)>3600*1000);
+  const defaultWindow=isDailyData?tSpan+1000:6.5*3600*1000;
+  const windowMs=opts.windowMs?(isDailyData?Math.max(opts.windowMs,tSpan+1000):opts.windowMs):defaultWindow;
+  const tNow=history[history.length-1].t;
+  const data=history.filter(p=>(tNow-p.t)<=windowMs);
+  if (data.length<2) return;
+  const ts=data.map(p=>p.t), vs=data.map(p=>p.v);
+  const tMin=ts[0], tMax=ts[ts.length-1];
+  const vMin=Math.min(...vs, refLine?refLine:Infinity), vMax=Math.max(...vs, refLine?refLine:-Infinity);
+  const pad=(vMax-vMin)*0.08||1, lo=vMin-pad, hi=vMax+pad;
+  const x=t=>(tMax===tMin?W:((t-tMin)/(tMax-tMin))*W);
+  const y=v=>H-((v-lo)/(hi-lo))*H;
+  if (refLine){
+    ctx.strokeStyle='#d1d5db'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(0,y(refLine)); ctx.lineTo(W,y(refLine)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.lineWidth=1.5;
+  const last=data[data.length-1].v;
+  ctx.strokeStyle=opts.lineColor||(refLine?(last>refLine?'#d92d20':last<refLine?'#1d4ed8':'#374151'):'#374151');
+  ctx.beginPath();
+  data.forEach((p,i)=>{ const X=x(p.t),Y=y(p.v); if(i===0) ctx.moveTo(X,Y); else ctx.lineTo(X,Y); });
+  ctx.stroke();
+}
+
+// --------- Card events ---------
+function attachCardEvents(el, ticker){
+  el.addEventListener('contextmenu', (e) => { e.preventDefault(); openGridSettings(ticker); });
+  el.addEventListener('dblclick', () => openDetail(ticker));
+  let touchStartT=0, touchStartY=0, touchStartX=0, longPressTimer=null, touchMoved=false;
+  el.addEventListener('touchstart', (e) => {
+    if (e.touches.length!==1) return;
+    const t=e.touches[0]; touchStartT=Date.now(); touchStartY=t.clientY; touchStartX=t.clientX; touchMoved=false;
+    longPressTimer=setTimeout(()=>{ if(!touchMoved){ openGridSettings(ticker); if(navigator.vibrate) navigator.vibrate(30); } }, 550);
+  }, {passive:true});
+  el.addEventListener('touchmove', (e) => {
+    if (e.touches.length!==1) return;
+    const t=e.touches[0], dx=t.clientX-touchStartX, dy=t.clientY-touchStartY;
+    if (Math.abs(dx)>8||Math.abs(dy)>8){ touchMoved=true; clearTimeout(longPressTimer); }
+  }, {passive:true});
+  el.addEventListener('touchend', (e) => {
+    clearTimeout(longPressTimer);
+    const dur=Date.now()-touchStartT, t=e.changedTouches[0];
+    const dx=t.clientX-touchStartX, dy=t.clientY-touchStartY;
+    if (dy<-50&&Math.abs(dx)<40&&dur<600) openDetail(ticker);
+  });
+}
+
+// --------- Global Settings ---------
+function openGlobalSettings(){
+  $('#gs-finnhub-key').value = state.settings.finnhubKey;
+  $('#gs-proxy').value       = state.settings.proxyUrl;
+  $('#globalSettingsModal').classList.add('open');
+}
+function closeGlobalSettings(){ $('#globalSettingsModal').classList.remove('open'); }
+async function saveGlobalSettings(){
+  state.settings.finnhubKey = $('#gs-finnhub-key').value.trim();
+  state.settings.proxyUrl   = $('#gs-proxy').value.trim();
+  closeGlobalSettings();
+  await saveSettings();
+  finnhubWsConnect();
+}
+
+// --------- Grid Settings ---------
+let psEditingTicker = null;
+function openGridSettings(ticker){
+  const stock = findStock(ticker); if (!stock) return;
+  psEditingTicker = ticker;
+  $('#ps-title').textContent = stock.name + ' (' + ticker + ')';
+  $('#ps-ticker').value = stock.ticker;
+  $('#ps-name').value = stock.name;
+  $('#ps-bgcolor').value = stock.bgColor || '#ffffff';
+  for (let i=0;i<4;i++){
+    const sel = document.querySelector(`#gridSettingsModal select[data-past-idx="${i}"]`);
+    sel.innerHTML = PAST_OPTIONS.map(o=>`<option value="${o.key}">${escapeHtml(o.label)}</option>`).join('');
+    sel.value = stock.past?.[i] || PAST_OPTIONS[i].key;
+  }
+  $('#gridSettingsModal').classList.add('open');
+}
+function closeGridSettings(){ $('#gridSettingsModal').classList.remove('open'); }
+async function saveGridSettings(){
+  if (!psEditingTicker) return;
+  const stock = findStock(psEditingTicker); if (!stock) return;
+  const newTicker  = $('#ps-ticker').value.trim();
+  const newName    = $('#ps-name').value.trim() || newTicker;
+  const newBgColor = $('#ps-bgcolor').value==='#ffffff' ? '' : $('#ps-bgcolor').value;
+  const past = [];
+  for (let i=0;i<4;i++) past.push(document.querySelector(`#gridSettingsModal select[data-past-idx="${i}"]`).value);
+  stock.ticker  = newTicker;
+  stock.name    = newName;
+  stock.past    = past;
+  stock.bgColor = newBgColor;
+  delete state.prices[psEditingTicker];
+  closeGridSettings();
+  await saveSettings();
+  renderGrids();
+  refreshHistoricalAll();
+  // Re-subscribe new ticker to WS
+  const ws = state.finnhubWs;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'subscribe', symbol:newTicker}));
+}
+
+// --------- Detail view ---------
+function openDetail(ticker){
+  state.detailTicker = ticker;
+  const stock = findStock(ticker);
+  $('#dv-title').textContent = stock.name;
+  $('#dv-sub').textContent = ticker + ' · NASDAQ';
+  // Unsubscribe other tickers; poll focused ticker via REST
+  const ws = state.finnhubWs;
+  if (ws && ws.readyState === WebSocket.OPEN)
+    state.stocks.us.forEach(s => { if (s.ticker!==ticker) ws.send(JSON.stringify({type:'unsubscribe', symbol:s.ticker})); });
+  if (state.detailPollTimer) clearInterval(state.detailPollTimer);
+  state.detailPollTimer = setInterval(async () => {
+    if (state.detailTicker !== ticker) return;
+    try {
+      const q = await finnhubQuote(ticker);
+      if (q.price > 0){
+        const ent = state.prices[ticker] || (state.prices[ticker] = {});
+        ent.price = q.price;
+        ent.history = ent.history || [];
+        ent.history.push({t:Date.now(), v:q.price});
+        if (ent.history.length>5000) ent.history=ent.history.slice(-3000);
+        renderCardPrice(ticker); renderDetailLive();
+      }
+    } catch(e){}
+  }, 1000);
+
+  const past = state.detailPast || ['1d','2d','3d','5d','1w','2w','1m','3m'];
+  state.detailPast = past;
+  const grid=$('#dv-past'); grid.innerHTML='';
+  for (let i=0;i<8;i++){
+    const cell=document.createElement('div'); cell.className='past-cell';
+    const cur=past[i]||PAST_OPTIONS[i%PAST_OPTIONS.length].key;
+    cell.innerHTML=`
+      <div class="past-label">${escapeHtml(pastByKey(cur).label)}</div>
+      <div class="past-val">—</div>
+      <select>${PAST_OPTIONS.map(o=>`<option value="${o.key}">${escapeHtml(o.label)}</option>`).join('')}</select>
+    `;
+    const sel=cell.querySelector('select'); sel.value=cur;
+    sel.addEventListener('change', () => {
+      state.detailPast[i]=sel.value;
+      cell.querySelector('.past-label').textContent=pastByKey(sel.value).label;
+      renderDetailLive(); saveSettings();
+    });
+    grid.appendChild(cell);
+  }
+  $('#detailView').classList.add('open');
+  renderDetailLive();
+  if (state.detailGraphHandle) cancelAnimationFrame(state.detailGraphHandle);
+  const loop = () => {
+    if (state.detailTicker !== ticker) return;
+    renderDetailLive();
+    state.detailGraphHandle = requestAnimationFrame(loop);
+  };
+  loop();
+}
+function closeDetail(){
+  const prevTicker = state.detailTicker;
+  state.detailTicker = null;
+  $('#detailView').classList.remove('open');
+  if (state.detailGraphHandle) cancelAnimationFrame(state.detailGraphHandle);
+  if (state.detailPollTimer){ clearInterval(state.detailPollTimer); state.detailPollTimer=null; }
+  // Resubscribe all US tickers
+  const ws = state.finnhubWs;
+  if (ws && ws.readyState === WebSocket.OPEN)
+    state.stocks.us.forEach(s => { if(s.ticker!==prevTicker) ws.send(JSON.stringify({type:'subscribe', symbol:s.ticker})); });
+}
+function renderDetailLive(){
+  if (!state.detailTicker) return;
+  const t=state.detailTicker, p=state.prices[t]||{};
+  $('#dv-price').textContent = p.price!=null ? fmtNum(p.price,2) : '—';
+  if (p.price!=null && p.prevClose){
+    const diff=p.price-p.prevClose, pct=diff/p.prevClose*100;
+    const sign=diff>0?'▲':diff<0?'▼':'·', cls=diff>0?'up':diff<0?'down':'';
+    $('#dv-price').className='detail-price '+cls;
+    $('#dv-change').className='card-change '+cls;
+    $('#dv-change').textContent=`${sign} ${fmtNum(Math.abs(diff),2)} (${fmtPct(pct)})`;
+  }
+  const canvas=$('#dv-graph');
+  if (p.history&&p.history.length>1){
+    const gc=p.prevClose?(p.price>p.prevClose?'#d92d20':p.price<p.prevClose?'#1d4ed8':'#374151'):'#374151';
+    drawLineGraph(canvas, p.history, p.prevClose, {windowMs:3*24*3600*1000, lineColor:gc});
+  } else {
+    const ctx=canvas.getContext('2d'); if(canvas.width>0) ctx.clearRect(0,0,canvas.width,canvas.height);
+  }
+  const cells=$$('#dv-past .past-cell');
+  cells.forEach((cell,i)=>{
+    const key=state.detailPast[i], val=p.pastCloses&&p.pastCloses[key];
+    cell.querySelector('.past-val').textContent=val!=null?fmtNum(val,2):'—';
+  });
+}
+
+// --------- Historical fetch ---------
+async function refreshHistoricalAll(){
+  for (let i=0; i<state.stocks.us.length; i++){
+    await refreshHistoricalOne(state.stocks.us[i]);
+    if (i < state.stocks.us.length-1) await new Promise(r=>setTimeout(r,1200));
+  }
+}
+async function refreshHistoricalOne(stock){
+  try {
+    const ent = state.prices[stock.ticker] || (state.prices[stock.ticker]={});
+    ent.pastCloses = ent.pastCloses || {};
+    // Finnhub quote: prevClose + seed price
+    try {
+      const q = await finnhubQuote(stock.ticker);
+      if (q.prevClose>0){ if(ent.prevClose==null) ent.prevClose=q.prevClose; ent.pastCloses['1d']=q.prevClose; }
+      if (q.price>0 && ent.price==null) ent.price=q.price;
+    } catch(e){}
+    // Finnhub metrics: PER / ROE
+    try { const m=await finnhubMetrics(stock.ticker); ent.per=m.per; ent.roe=m.roe; } catch(e){}
+    // Yahoo daily history for past closes
+    const hist = await yahooHistoryUS(stock.ticker);
+    if (hist.length){
+      const allKeys=new Set([...(stock.past||[]), ...(state.detailPast||[])]);
+      allKeys.forEach(k=>{
+        let idx;
+        if (['1d','2d','3d','4d','5d'].includes(k)) idx=pastByKey(k).days-1;
+        else if (k==='1w')  idx=4;
+        else if (k==='2w')  idx=9;
+        else if (k==='1m')  idx=20;
+        else if (k==='3m')  idx=62;
+        else if (k==='6m')  idx=125;
+        else if (k==='1y')  idx=251;
+        else idx=pastByKey(k).days-1;
+        const v=hist[Math.min(idx,hist.length-1)]?.close??null;
+        if (v!=null && !(k==='1d' && ent.pastCloses['1d']!=null)) ent.pastCloses[k]=v;
+      });
+      if (ent.prevClose==null) ent.prevClose=hist[0].close;
+      if (!isMarketUS_open() && ent.price==null) ent.price=hist[0].close;
+      if (!ent.history||ent.history.length<2){ ent.history=dailyHistoryToGraphPoints(hist); if(!ent.price) ent.price=hist[0].close; }
+    }
+    if ((!ent.history||ent.history.length<2) && ent.prevClose>0){
+      const now=Date.now();
+      ent.history=[{t:now-6.5*3600*1000,v:ent.prevClose},{t:now,v:ent.prevClose}];
+      if (!ent.price) ent.price=ent.prevClose;
+    }
+    renderCardFull(stock.ticker);
+    if (state.detailTicker===stock.ticker) renderDetailLive();
+  } catch(e){ console.warn('historical', stock.ticker, e.message); }
+}
+
+// --------- Init ---------
+async function init(){
+  $('#globalSettingsBtn').addEventListener('click', openGlobalSettings);
+  $('#gs-cancel').addEventListener('click', closeGlobalSettings);
+  $('#gs-save').addEventListener('click', saveGlobalSettings);
+  $('#ps-cancel').addEventListener('click', closeGridSettings);
+  $('#ps-save').addEventListener('click', saveGridSettings);
+  $('#dv-close').addEventListener('click', closeDetail);
+  $('#dv-settings').addEventListener('click', () => { if (state.detailTicker) openGridSettings(state.detailTicker); });
+
+  let _nameTimer=null;
+  $('#ps-ticker').addEventListener('input', () => {
+    clearTimeout(_nameTimer);
+    const ticker=$('#ps-ticker').value.trim(); if(!ticker) return;
+    _nameTimer=setTimeout(async()=>{
+      $('#ps-name-loading').style.display='inline';
+      const name=await fetchStockName(ticker);
+      $('#ps-name-loading').style.display='none';
+      if(name) $('#ps-name').value=name;
+    }, 600);
+  });
+  $('#ps-bgcolor-reset').addEventListener('click', () => { $('#ps-bgcolor').value='#ffffff'; });
+  document.addEventListener('keydown', (e) => {
+    if (e.key==='Escape'){ closeDetail(); closeGridSettings(); closeGlobalSettings(); }
+  });
+
+  const loaded = await loadSettings();
+  if (loaded && loaded.global && loaded.stocks){
+    state.settings = Object.assign(makeDefaultGlobal(), loaded.global);
+    state.stocks.us = (loaded.stocks.us || []).map(s => ({
+      ...s,
+      past: s.past?.length ? s.past : ['1d','2d','3d','1w'],
+      bgColor: s.bgColor ?? '',
+    }));
+    _savedKrStocks = loaded.stocks.kr || [];
+    state.detailPast = loaded.detailPast || ['1d','2d','3d','5d','1w','2w','1m','3m'];
+    setStatus('Settings loaded', 'ok');
+  } else {
+    state.settings = makeDefaultGlobal();
+    state.stocks = makeDefaultStocks();
+    _savedKrStocks = [];
+    state.detailPast = ['1d','2d','3d','5d','1w','2w','1m','3m'];
+    setStatus('Default settings — set Finnhub API Key in ⚙');
+  }
+
+  renderGrids();
+  finnhubWsConnect();
+  refreshHistoricalAll();
+
+  setInterval(refreshHistoricalAll, 60*60*1000);
+  setInterval(() => { state.stocks.us.forEach(s=>renderCardFull(s.ticker)); if(state.detailTicker) renderDetailLive(); }, 60*1000);
+  window.addEventListener('resize', () => {
+    state.stocks.us.forEach(s=>{ const card=findCard(s.ticker); if(card) drawCardGraph(card, state.prices[s.ticker]||{}); });
+    if (state.detailTicker) renderDetailLive();
+  });
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

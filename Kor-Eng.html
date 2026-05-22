@@ -463,6 +463,8 @@ const state = {
   prices: {},                // ticker -> {price, prevClose, per, roe, openPrice, history:[{t,v}], pastCloses:{key:val}}
   marketActivity: {},        // ticker -> {initialPrice, checks, active}
   kisToken: null,            // {access_token, expires_at}
+  kisTokenPending: null,     // in-flight token request (deduplicates parallel calls)
+  kisLastTokenAt: 0,         // timestamp of last token request (rate-limit guard)
   finnhubWs: null,
   detailTicker: null,
   detailPast: null,          // array of 8 past keys
@@ -595,23 +597,23 @@ function rfc4180Balanced(s){
   for (let k=0;k<s.length;k++) if (s[k]==='"') c++;
   return c % 2 === 0;
 }
+async function uploadSettingsCSV(payload){
+  const json    = JSON.stringify(payload);
+  const escaped = '"' + json.replace(/"/g,'""') + '"';
+  const csv     = 'key,value\nconfig,' + escaped + '\n';
+  const blob    = new Blob([csv], {type:'text/csv'});
+  const { error } = await sb.storage.from(BUCKET).upload(DATA_FILE, blob, {
+    upsert: true, contentType: 'text/csv'
+  });
+  if (error) throw error;
+}
+function buildSettingsPayload(){
+  return { version:1, global: state.settings, stocks: state.stocks, detailPast: state.detailPast };
+}
 async function saveSettings(){
   setStatus('저장 중…');
   try {
-    const payload = {
-      version: 1,
-      global: state.settings,
-      stocks: state.stocks,
-      detailPast: state.detailPast,
-    };
-    const json = JSON.stringify(payload);
-    const escaped = '"' + json.replace(/"/g,'""') + '"';
-    const csv = 'key,value\nconfig,' + escaped + '\n';
-    const blob = new Blob([csv], {type:'text/csv'});
-    const { error } = await sb.storage.from(BUCKET).upload(DATA_FILE, blob, {
-      upsert: true, contentType: 'text/csv'
-    });
-    if (error) throw error;
+    await uploadSettingsCSV(buildSettingsPayload());
     setStatus('저장 완료', 'ok');
     toast('설정 저장됨', 'ok');
   } catch(e){
@@ -636,8 +638,37 @@ function makeDefaultGlobal(){
     finnhubKey: '',
     refreshSec: 1,
     proxyUrl: '',
+    kisTokenData: null,  // { access_token, expires_at } — persisted to cloud
   };
 }
+
+// --------- KIS global rate limiter (1 req/sec, timestamp-based) ---------
+const _kisLimiter = (() => {
+  const GAP = 1000; // ms between any two KIS requests
+  const queue = [];
+  let lastAt = 0;
+  let timer = null;
+  function schedule(){
+    if (timer) return;
+    const delay = Math.max(0, lastAt + GAP - Date.now());
+    timer = setTimeout(() => {
+      timer = null;
+      if (!queue.length) return;
+      const { fn, resolve, reject } = queue.shift();
+      lastAt = Date.now();
+      fn().then(resolve, reject);
+      if (queue.length) schedule();
+    }, delay);
+  }
+  return {
+    fetch(...args){
+      return new Promise((resolve, reject) => {
+        queue.push({ fn: () => fetch(...args), resolve, reject });
+        schedule();
+      });
+    }
+  };
+})();
 
 // --------- KIS (한국투자증권) API ---------
 function kisBase(){
@@ -656,32 +687,48 @@ async function kisGetToken(){
   const now = Date.now();
   if (state.kisToken && state.kisToken.expires_at > now + 60000) return state.kisToken.access_token;
   if (!state.settings.kisKey || !state.settings.kisSecret) throw new Error('KIS App Key/Secret 미설정');
-  const r = await fetch(withProxy(kisBase() + '/oauth2/tokenP'), {
-    method:'POST',
-    headers: {'Content-Type':'application/json; charset=utf-8'},
-    body: JSON.stringify({
-      grant_type:'client_credentials',
-      appkey: state.settings.kisKey,
-      appsecret: state.settings.kisSecret,
-    })
-  });
-  if (!r.ok){
-    const t = await r.text();
-    throw new Error('KIS 토큰 발급 실패: ' + r.status + ' ' + t.slice(0,200));
-  }
-  const j = await r.json();
-  state.kisToken = {
-    access_token: j.access_token,
-    expires_at: now + (j.expires_in ? j.expires_in*1000 : 23*3600*1000),
-  };
-  return state.kisToken.access_token;
+  // KIS rate-limits token issuance to once per minute (EGW00133)
+  if (state.kisTokenPending) return state.kisTokenPending;
+  if (state.kisLastTokenAt && now - state.kisLastTokenAt < 62000)
+    throw new Error('KIS 토큰 재발급 대기 중 (1분 제한)');
+  state.kisLastTokenAt = now;
+  state.kisTokenPending = (async () => {
+    try {
+      const r = await _kisLimiter.fetch(withProxy(kisBase() + '/oauth2/tokenP'), {
+        method:'POST',
+        headers: {'Content-Type':'application/json; charset=utf-8'},
+        body: JSON.stringify({
+          grant_type:'client_credentials',
+          appkey: state.settings.kisKey,
+          appsecret: state.settings.kisSecret,
+        })
+      });
+      if (!r.ok){
+        const t = await r.text();
+        throw new Error('KIS 토큰 발급 실패: ' + r.status + ' ' + t.slice(0,200));
+      }
+      const j = await r.json();
+      state.kisToken = {
+        access_token: j.access_token,
+        expires_at: now + (j.expires_in ? j.expires_in*1000 : 23*3600*1000),
+      };
+      // Persist token to cloud so it survives page reloads (valid 24h)
+      state.settings.kisTokenData = { access_token: state.kisToken.access_token, expires_at: state.kisToken.expires_at };
+      uploadSettingsCSV(buildSettingsPayload()).catch(e => console.warn('Token save failed:', e.message));
+      console.log('[KIS] New token saved to cloud, valid until', new Date(state.kisToken.expires_at).toLocaleString());
+      return state.kisToken.access_token;
+    } finally {
+      state.kisTokenPending = null;
+    }
+  })();
+  return state.kisTokenPending;
 }
 async function kisQuote(ticker){
   const token = await kisGetToken();
   const url = withProxy(kisBase() +
     '/uapi/domestic-stock/v1/quotations/inquire-price'
     + '?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=' + encodeURIComponent(ticker));
-  const r = await fetch(url, {
+  const r = await _kisLimiter.fetch(url, {
     headers: {
       'authorization': 'Bearer ' + token,
       'appkey': state.settings.kisKey,
@@ -690,7 +737,10 @@ async function kisQuote(ticker){
       'custtype':'P',
     }
   });
-  if (!r.ok) throw new Error('KIS 시세 조회 실패: ' + r.status);
+  if (!r.ok){
+    const body = await r.text().catch(()=>'');
+    throw new Error('KIS 시세 조회 실패: ' + r.status + ' ' + body.slice(0,300));
+  }
   const j = await r.json();
   const out = j.output || {};
   const price = +out.stck_prpr;       // 현재가
@@ -710,7 +760,7 @@ async function kisDailyHistory(ticker, days=120){
     + '/uapi/domestic-stock/v1/quotations/inquire-daily-price'
     + '?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=' + encodeURIComponent(ticker)
     + '&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0');
-  const r = await fetch(url, {
+  const r = await _kisLimiter.fetch(url, {
     headers: {
       'authorization': 'Bearer ' + token,
       'appkey': state.settings.kisKey,
@@ -761,6 +811,7 @@ async function finnhubDailyHistory(ticker, days=10){
   return [];
 }
 
+let _wsFails = 0;
 function finnhubWsConnect(){
   if (state.finnhubWs){ try { state.finnhubWs.close(); } catch(e){} state.finnhubWs = null; }
   const k = state.settings.finnhubKey;
@@ -768,6 +819,7 @@ function finnhubWsConnect(){
   const ws = new WebSocket('wss://ws.finnhub.io?token=' + encodeURIComponent(k));
   state.finnhubWs = ws;
   ws.addEventListener('open', () => {
+    _wsFails = 0;
     state.stocks.us.forEach(s => {
       ws.send(JSON.stringify({type:'subscribe', symbol: s.ticker}));
     });
@@ -830,10 +882,12 @@ function finnhubWsConnect(){
     } catch(e){}
   });
   ws.addEventListener('close', () => {
-    // Reconnect after 5s
-    setTimeout(()=>{ if (state.settings.finnhubKey) finnhubWsConnect(); }, 5000);
+    if (!state.settings.finnhubKey) return;
+    _wsFails++;
+    const delay = Math.min(5000 * Math.pow(2, _wsFails - 1), 120000); // 5s, 10s, 20s … max 2min
+    setTimeout(() => { if (state.settings.finnhubKey) finnhubWsConnect(); }, delay);
   });
-  ws.addEventListener('error', (e) => { console.warn('Finnhub WS error', e); });
+  ws.addEventListener('error', () => {}); // close fires after error; handled there
 }
 
 // --------- Stooq (free historical fallback for US) ---------
@@ -896,7 +950,16 @@ async function finnhubIntradayUS(ticker){
 // --------- Yahoo Finance (US daily history — not for .KS; CORS-blocked from localhost) ---------
 async function yahooFetchChart(symbol, params){
   const qs = new URLSearchParams(params).toString();
-  // Direct attempts (work on deployed domains; rate-limited/blocked from localhost)
+  // If proxy is configured, use it directly — skips CORS-blocked direct attempts
+  if (state.settings.proxyUrl){
+    const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?${qs}`;
+    const r = await fetch(withProxy(url), {cache:'no-store', headers:{Accept:'application/json'}});
+    if (!r.ok) throw new Error('Yahoo proxy ' + r.status);
+    const j = await r.json();
+    const res = j.chart?.result?.[0]; if (!res) throw new Error('Yahoo proxy no result');
+    return res;
+  }
+  // No proxy — try direct (works on deployed domains like GitHub Pages)
   for (const host of ['query2', 'query1']){
     try {
       const url = `https://${host}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?${qs}`;
@@ -907,16 +970,7 @@ async function yahooFetchChart(symbol, params){
       if (res) return res;
     } catch(e){ /* CORS or rate-limit — silent */ }
   }
-  // Proxy fallback: if user configured a CORS proxy this always works
-  if (state.settings.proxyUrl){
-    const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?${qs}`;
-    const r = await fetch(withProxy(url), {cache:'no-store', headers:{Accept:'application/json'}});
-    if (!r.ok) throw new Error('Yahoo proxy ' + r.status);
-    const j = await r.json();
-    const res = j.chart?.result?.[0]; if (!res) throw new Error('Yahoo proxy no result');
-    return res;
-  }
-  throw new Error('Yahoo CORS');
+  throw new Error('Yahoo CORS — set a proxy URL in Global Settings');
 }
 async function yahooHistoryUS(ticker, days=130){
   try {
@@ -1217,6 +1271,8 @@ async function saveGlobalSettings(){
   await saveSettings();
   // restart connections
   state.kisToken = null;
+  state.kisLastTokenAt = 0;
+  state.settings.kisTokenData = null;
   finnhubWsConnect();
   startPolling();
 }
@@ -1414,9 +1470,17 @@ async function pollOne(stock, market){
     console.warn('poll error', stock.ticker, e.message);
   }
 }
+let _kisPolling = false;
 async function pollOnce(){
-  await Promise.allSettled(state.stocks.kr.map(s => pollOne(s, 'kr')));
-  // US: WebSocket handles live prices; no REST polling needed.
+  if (_kisPolling) return; // skip if previous cycle hasn't finished
+  _kisPolling = true;
+  try {
+    // Fire all polls; _kisLimiter serialises the actual HTTP requests at ≤15 req/sec
+    for (const s of state.stocks.kr) await pollOne(s, 'kr');
+  } finally {
+    _kisPolling = false;
+  }
+  // US: live prices via Finnhub WebSocket; no REST polling needed.
 }
 function startPolling(){
   if (state.pollTimer) clearInterval(state.pollTimer);
@@ -1552,18 +1616,22 @@ async function init(){
   if (loaded && loaded.global && loaded.stocks){
     state.settings = Object.assign(makeDefaultGlobal(), loaded.global);
     state.stocks = loaded.stocks;
-    // Hydrate any missing fields; strip multi-day past from US cards
-    const US_DISALLOWED = new Set(['2d','3d','4d','1w','2w','1m','3m','6m','1y']);
+    // Hydrate any missing fields
     state.stocks.kr.forEach(s => {
       if (!s.past || !s.past.length) s.past = ['1d','2d','3d','1w'];
       if (s.bgColor === undefined) s.bgColor = '';
     });
     state.stocks.us.forEach(s => {
-      s.past = (s.past || []).filter(k => !US_DISALLOWED.has(k));
-      if (!s.past.length) s.past = ['1d'];
+      if (!s.past || !s.past.length) s.past = ['1d','2d','3d','1w'];
       if (s.bgColor === undefined) s.bgColor = '';
     });
     state.detailPast = loaded.detailPast || ['1d','2d','3d','5d','1w','2w','1m','3m'];
+    // Restore KIS token if still valid (saves one token request on startup)
+    const td = state.settings.kisTokenData;
+    if (td && td.access_token && td.expires_at > Date.now() + 60000){
+      state.kisToken = { access_token: td.access_token, expires_at: td.expires_at };
+      console.log('[KIS] Token restored from cloud, valid until', new Date(td.expires_at).toLocaleString());
+    }
     setStatus('설정 로드 완료', 'ok');
   } else {
     state.settings = makeDefaultGlobal();
