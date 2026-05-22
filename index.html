@@ -125,7 +125,7 @@
   .mw-change { font-family: var(--mono); font-size: 12px; margin-bottom: 4px; }
   .mw-change.up { color: var(--up); }
   .mw-change.down { color: var(--down); }
-  .mw-graph  { flex: 1; min-height: 100px; border-radius: 4px; background: #fafafa; margin-top: 4px; }
+  .mw-graph  { flex: 1; display: block; width: 100%; min-height: 100px; border-radius: 4px; background: #fafafa; margin-top: 4px; }
   .mw-updated { font-size: 10px; color: var(--text-muted); margin-top: 3px; text-align: right; }
 
   .modal-backdrop {
@@ -708,6 +708,32 @@ async function fetchMarketChart(symbol) {
   const ts = res.timestamp || [], closes = res.indicators?.quote?.[0]?.close || [];
   return ts.map((t, i) => ({ t: t * 1000, v: closes[i] })).filter(pt => pt.v != null);
 }
+// Fallback: fetch ~3 months of daily history from Yahoo Finance (.KS then .KQ)
+async function yahooHistoryKR(ticker) {
+  for (const suffix of ['.KS', '.KQ']) {
+    try {
+      const symbol = ticker + suffix;
+      const url = 'https://query1.finance.yahoo.com/v8/finance/chart/'
+        + encodeURIComponent(symbol) + '?interval=1d&range=3mo';
+      const p = state.settings?.proxyUrl || '';
+      const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
+      const r = await fetch(target, { headers: { Accept: 'application/json' } });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const res = j.chart?.result?.[0]; if (!res) continue;
+      const ts = res.timestamp || [];
+      const closes = res.indicators?.quote?.[0]?.close || [];
+      // Yahoo returns oldest-first; reverse to newest-first to match KIS format
+      const hist = ts.map((t, i) => ({
+        date: new Date(t * 1000).toISOString().slice(0, 10).replace(/-/g, ''),
+        close: closes[i],
+        frgnNetBuy: null,
+      })).filter(x => x.close != null && x.close > 0).reverse();
+      if (hist.length >= 15) return hist;
+    } catch(e) { /* try next suffix */ }
+  }
+  return [];
+}
 function drawMarketGraph(canvasId, history, refPrice) {
   const canvas = document.getElementById(canvasId); if (!canvas) return;
   if (!history || history.length < 2) return;
@@ -721,12 +747,14 @@ function drawDualMarketGraph(canvasId, hist1, ref1, color1, hist2, ref2, color2)
   const canvas = document.getElementById(canvasId); if (!canvas) return;
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  if (canvas.width !== rect.width*dpr || canvas.height !== rect.height*dpr) {
-    canvas.width = rect.width*dpr; canvas.height = rect.height*dpr;
+  const W = rect.width || canvas.offsetWidth || (canvas.parentElement ? canvas.parentElement.clientWidth : 300);
+  const H = rect.height || canvas.offsetHeight || 120;
+  if (!W) { requestAnimationFrame(() => drawCombinedGraph()); return; }
+  if (canvas.width !== Math.round(W*dpr) || canvas.height !== Math.round(H*dpr)) {
+    canvas.width = Math.round(W*dpr); canvas.height = Math.round(H*dpr);
   }
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  const W = rect.width, H = rect.height;
   ctx.clearRect(0,0,W,H);
   function drawSeries(history, refLine, color) {
     if (!history || history.length < 2) return;
@@ -977,9 +1005,8 @@ function attachCardEvents(el, ticker){
   }, {passive:true});
   el.addEventListener('touchend', (e) => {
     clearTimeout(longPressTimer);
-    const dur=Date.now()-touchStartT, t=e.changedTouches[0];
-    const dx=t.clientX-touchStartX, dy=t.clientY-touchStartY;
-    if (dy<-50&&Math.abs(dx)<40&&dur<600) openDetail(ticker);
+    const dur=Date.now()-touchStartT;
+    if (!touchMoved && dur < 400) openDetail(ticker);
   });
 }
 
@@ -1191,6 +1218,9 @@ async function refreshHistoricalOne(stock){
         }
       }
     } catch(e){ hist = []; }
+    if (!hist.length) {
+      try { hist = await yahooHistoryKR(stock.ticker); } catch(e) {}
+    }
     if (hist.length){
       const allKeys = new Set([...(stock.past||[]), ...(state.detailPast||[])]);
       allKeys.forEach(k => {
