@@ -691,22 +691,27 @@ async function fetchMarketQuotes() {
     + '&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketPreviousClose';
   const p = state.settings?.proxyUrl || '';
   const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
-  const r = await fetch(target, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
+  const r = await fetch(target, { headers: { Accept: 'application/json' } });
   if (!r.ok) throw new Error('Yahoo quote ' + r.status);
   const j = await r.json();
   return j.quoteResponse?.result || [];
 }
 async function fetchMarketChart(symbol) {
-  const url = 'https://query1.finance.yahoo.com/v8/finance/chart/'
-    + encodeURIComponent(symbol) + '?interval=5m&range=1d';
   const p = state.settings?.proxyUrl || '';
-  const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
-  const r = await fetch(target, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
-  if (!r.ok) throw new Error('Yahoo chart ' + r.status);
-  const j = await r.json();
-  const res = j.chart?.result?.[0]; if (!res) return [];
-  const ts = res.timestamp || [], closes = res.indicators?.quote?.[0]?.close || [];
-  return ts.map((t, i) => ({ t: t * 1000, v: closes[i] })).filter(pt => pt.v != null);
+  for (const host of ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']) {
+    try {
+      const url = host + '/v8/finance/chart/' + encodeURIComponent(symbol) + '?interval=5m&range=1d';
+      const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
+      const r = await fetch(target, { headers: { Accept: 'application/json' } });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const res = j.chart?.result?.[0]; if (!res) continue;
+      const ts = res.timestamp || [], closes = res.indicators?.quote?.[0]?.close || [];
+      const pts = ts.map((t, i) => ({ t: t * 1000, v: closes[i] })).filter(pt => pt.v != null);
+      if (pts.length) return pts;
+    } catch(e) { /* try next host */ }
+  }
+  return [];
 }
 // Fallback: fetch ~3 months of daily history from Yahoo Finance (.KS then .KQ)
 async function yahooHistoryKR(ticker) {
@@ -748,8 +753,8 @@ function drawDualMarketGraph(canvasId, hist1, ref1, color1, hist2, ref2, color2)
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   const W = rect.width || canvas.offsetWidth || (canvas.parentElement ? canvas.parentElement.clientWidth : 300);
-  const H = rect.height || canvas.offsetHeight || 120;
-  if (!W) { requestAnimationFrame(() => drawCombinedGraph()); return; }
+  const H = Math.max(rect.height || canvas.offsetHeight || 0, 100);
+  if (!W) { setTimeout(() => drawCombinedGraph(), 80); return; }
   if (canvas.width !== Math.round(W*dpr) || canvas.height !== Math.round(H*dpr)) {
     canvas.width = Math.round(W*dpr); canvas.height = Math.round(H*dpr);
   }
@@ -810,20 +815,27 @@ function renderMarketWidget(idPrefix, data) {
 async function updateMarketPrices() {
   try {
     const quotes = await fetchMarketQuotes();
+    const now = Date.now();
     quotes.forEach(q => {
       const d = q.symbol === 'USDKRW=X' ? state.forex : q.symbol === 'CL=F' ? state.oil : null;
       if (!d) return;
       d.price = q.regularMarketPrice; d.prevClose = q.regularMarketPreviousClose;
       d.change = q.regularMarketChange; d.changePct = q.regularMarketChangePercent;
+      // Accumulate price history so the graph works even when the chart API fails on mobile
+      if (d.price != null && (!d.history.length || now - d.history[d.history.length-1].t > 4000)) {
+        d.history.push({ t: now, v: d.price });
+        if (d.history.length > 1440) d.history = d.history.slice(-720);
+      }
     });
     renderMarketWidget('fw', state.forex);
     renderMarketWidget('ow', state.oil);
   } catch(e) { console.warn('Market quote error:', e.message); }
 }
 async function refreshMarketCharts() {
-  try { state.forex.history = await fetchMarketChart('USDKRW=X'); }
+  // Only replace accumulated poll history if Yahoo returns real data
+  try { const h = await fetchMarketChart('USDKRW=X'); if (h.length >= 2) state.forex.history = h; }
   catch(e) { console.warn('Forex chart:', e.message); }
-  try { state.oil.history = await fetchMarketChart('CL=F'); }
+  try { const h = await fetchMarketChart('CL=F'); if (h.length >= 2) state.oil.history = h; }
   catch(e) { console.warn('Oil chart:', e.message); }
   drawCombinedGraph();
 }
