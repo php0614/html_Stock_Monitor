@@ -693,21 +693,54 @@ function calcRSI(hist, period = 14) { // hist: newest-first
 // --------- Market data (exchange rate + oil) via Yahoo Finance ---------
 async function fetchMarketQuotes() {
   const p = state.settings?.proxyUrl || '';
+  function withProxy(url) { return p ? (p.endsWith('/') ? p + url : p + '/' + url) : url; }
+
+  // Primary: Yahoo chart endpoint for both symbols simultaneously
+  // Works when /quote is rate-limited or CORS-blocked (uses proxy when set)
+  async function chartQ(enc, sym) {
+    for (const host of ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']) {
+      try {
+        const url = `${host}/v8/finance/chart/${enc}?interval=1m&range=1d`;
+        const r = await fetch(withProxy(url), { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const m = j.chart?.result?.[0]?.meta;
+        if (m?.regularMarketPrice) {
+          const price = m.regularMarketPrice;
+          const prev = m.chartPreviousClose ?? m.previousClose ?? null;
+          const chg = prev != null ? +(price - prev).toFixed(2) : null;
+          const pct = chg != null && prev ? +((chg / prev) * 100).toFixed(2) : null;
+          return { symbol: sym, regularMarketPrice: price, regularMarketChange: chg,
+            regularMarketChangePercent: pct, regularMarketPreviousClose: prev };
+        }
+      } catch(e) {}
+    }
+    return null;
+  }
+  try {
+    const [fq, oq] = await Promise.all([
+      chartQ('USDKRW%3DX', 'USDKRW=X'),
+      chartQ('CL%3DF', 'CL=F'),
+    ]);
+    const res = [fq, oq].filter(Boolean);
+    if (res.length) return res;
+  } catch(e) {}
+
+  // Secondary: Yahoo /quote (may work when chart is unavailable)
   const params = '?symbols=USDKRW%3DX%2CCL%3DF&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketPreviousClose';
-  // Try Yahoo Finance on both CDN hosts and both API versions
   for (const host of ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']) {
     for (const ver of ['v8', 'v7']) {
       try {
         const url = `${host}/${ver}/finance/quote${params}`;
-        const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
-        const r = await fetch(target, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
+        const r = await fetch(withProxy(url), { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
         if (!r.ok) continue;
         const j = await r.json();
-        const res = j.quoteResponse?.result || [];
-        if (res.length) return res;
-      } catch(e) { /* try next */ }
+        const result = j.quoteResponse?.result || [];
+        if (result.length) return result;
+      } catch(e) {}
     }
   }
+
   // Fallback 1: Dunamu (Kakao Pay) forex API — real-time KRW rate with actual change
   try {
     const r = await fetch('https://quotation-api-cdn.dunamu.com/v1/forex/recent?codes=FRX.KRWUSD');
@@ -727,6 +760,7 @@ async function fetchMarketQuotes() {
       }
     }
   } catch(e) {}
+
   // Fallback 2: Fawaz CDN daily rate (lags 1-2 days, change may be inaccurate)
   try {
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -742,7 +776,6 @@ async function fetchMarketQuotes() {
       if (krw) {
         let prevKrw = null;
         try { if (yr?.ok) { const yj = await yr.json(); prevKrw = yj.usd?.krw || null; } } catch(e) {}
-        // If today and yesterday have the same rate (Fawaz lag), try 2 days ago
         if (!prevKrw || prevKrw === krw) {
           try { if (dr?.ok) { const dj = await dr.json(); prevKrw = dj.usd?.krw || prevKrw; } } catch(e) {}
         }
@@ -754,27 +787,7 @@ async function fetchMarketQuotes() {
       }
     }
   } catch(e) {}
-  // Fallback 3: Yahoo chart endpoint for CL=F (oil) — works when /quote is rate-limited
-  try {
-    const p2 = state.settings?.proxyUrl || '';
-    for (const host of ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']) {
-      const url = host + '/v8/finance/chart/CL%3DF?interval=5m&range=1d';
-      const target = p2 ? (p2.endsWith('/') ? p2 + url : p2 + '/' + url) : url;
-      const r = await fetch(target, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
-      if (!r.ok) continue;
-      const j = await r.json();
-      const meta = j.chart?.result?.[0]?.meta;
-      if (meta?.regularMarketPrice) {
-        const price = meta.regularMarketPrice;
-        const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? null;
-        const chg = prevClose ? +(price - prevClose).toFixed(2) : null;
-        const chgPct = (chg != null && prevClose) ? +((chg / prevClose) * 100).toFixed(2) : null;
-        return [{ symbol: 'CL=F', regularMarketPrice: price,
-          regularMarketChange: chg, regularMarketChangePercent: chgPct,
-          regularMarketPreviousClose: prevClose }];
-      }
-    }
-  } catch(e) {}
+
   return [];
 }
 async function fetchMarketChart(symbol) {
@@ -1484,7 +1497,7 @@ async function init(){
 
   // Market widgets: price every 5s, chart every 5 min
   updateMarketPrices();
-  setInterval(updateMarketPrices, 5000);
+  setInterval(updateMarketPrices, 10000);
   refreshMarketCharts();
   setInterval(refreshMarketCharts, 5 * 60 * 1000);
 
