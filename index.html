@@ -717,29 +717,8 @@ async function fetchMarketQuotes() {
     }
     return null;
   }
-  // Forex: Dunamu (Korean onshore real-time rate) first, fall back to Yahoo chart
-  async function fetchForex() {
-    try {
-      const r = await fetch('https://quotation-api-cdn.dunamu.com/v1/forex/recent?codes=FRX.KRWUSD');
-      if (r.ok) {
-        const j = await r.json();
-        const item = Array.isArray(j) ? j[0] : null;
-        if (item?.basePrice) {
-          const krw = +item.basePrice;
-          const chg = item.change === 'RISE' ? +item.changePrice
-                    : item.change === 'FALL' ? -(+item.changePrice) : 0;
-          const prevKrw = +(krw - chg).toFixed(2);
-          const changePct = prevKrw ? +((chg / prevKrw) * 100).toFixed(2) : 0;
-          return { symbol: 'USDKRW=X', regularMarketPrice: krw,
-            regularMarketChange: chg, regularMarketChangePercent: changePct,
-            regularMarketPreviousClose: prevKrw };
-        }
-      }
-    } catch(e) {}
-    return chartQ('USDKRW%3DX', 'USDKRW=X');
-  }
   try {
-    const [fq, oq] = await Promise.all([fetchForex(), chartQ('CL%3DF', 'CL=F')]);
+    const [fq, oq] = await Promise.all([chartQ('USDKRW%3DX', 'USDKRW=X'), chartQ('CL%3DF', 'CL=F')]);
     const res = [fq, oq].filter(Boolean);
     if (res.length) return res;
   } catch(e) {}
@@ -759,27 +738,7 @@ async function fetchMarketQuotes() {
     }
   }
 
-  // Fallback 1: Dunamu (Kakao Pay) forex API — real-time KRW rate with actual change
-  try {
-    const r = await fetch('https://quotation-api-cdn.dunamu.com/v1/forex/recent?codes=FRX.KRWUSD');
-    if (r.ok) {
-      const j = await r.json();
-      const item = Array.isArray(j) ? j[0] : null;
-      if (item?.basePrice) {
-        const krw = +item.basePrice;
-        const chg = item.change === 'RISE' ? +item.changePrice
-                  : item.change === 'FALL' ? -(+item.changePrice)
-                  : 0;
-        const prevKrw = +(krw - chg).toFixed(2);
-        const changePct = prevKrw ? +((chg / prevKrw) * 100).toFixed(2) : 0;
-        return [{ symbol: 'USDKRW=X', regularMarketPrice: krw,
-          regularMarketChange: chg, regularMarketChangePercent: changePct,
-          regularMarketPreviousClose: prevKrw }];
-      }
-    }
-  } catch(e) {}
-
-  // Fallback 2: Fawaz CDN daily rate (lags 1-2 days, change may be inaccurate)
+  // Fallback: Fawaz CDN daily rate (lags 1-2 days, change may be inaccurate)
   try {
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
     const twoDaysAgo = new Date(Date.now() - 2*86400000).toISOString().slice(0, 10);
@@ -1087,7 +1046,6 @@ function renderCardFull(ticker){
   if (roeEl) roeEl.textContent = (p.roe != null) ? (fmtNum(p.roe, 2) + '%') : '—';
   // MACD
   const macdEl = card.querySelector('.pp-macd');
-  console.log(`[rcf] ${ticker} macd=${p.macd} rsi=${p.rsi} macdEl=${!!macdEl}`);
   if (macdEl) {
     const v = p.macd;
     macdEl.textContent = v != null ? (v >= 0 ? '+' : '') + fmtNum(v, 1) : '—';
@@ -1442,7 +1400,6 @@ async function refreshHistoricalOne(stock){
       ent.macd = calcMACD(hist);
       ent.rsi  = calcRSI(hist);
       ent.frgnRecent = hist.slice(0, 2).map(h => h.frgnNetBuy);
-      console.log(`[MACD/RSI] ${stock.ticker}: hist=${hist.length} macd=${ent.macd} rsi=${ent.rsi}`);
     }
     renderCardFull(stock.ticker);
     if (state.detailTicker === stock.ticker) renderDetailLive();
