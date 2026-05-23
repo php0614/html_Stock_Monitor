@@ -737,34 +737,36 @@ async function fetchMarketChart(symbol) {
       const res = j.chart?.result?.[0]; if (!res) continue;
       const ts = res.timestamp || [], closes = res.indicators?.quote?.[0]?.close || [];
       const pts = ts.map((t, i) => ({ t: t * 1000, v: closes[i] })).filter(pt => pt.v != null);
-      if (pts.length) return pts;
+      const prevClose = res.meta?.chartPreviousClose ?? res.meta?.previousClose ?? null;
+      if (pts.length) return { pts, prevClose };
     } catch(e) { /* try next host */ }
   }
-  return [];
+  return { pts: [], prevClose: null };
 }
-// Fallback: fetch ~3 months of daily history from Yahoo Finance (.KS then .KQ)
+// Fallback: fetch ~3 months of daily history from Yahoo Finance (.KS then .KQ, both hosts)
 async function yahooHistoryKR(ticker) {
+  const p = state.settings?.proxyUrl || '';
   for (const suffix of ['.KS', '.KQ']) {
-    try {
-      const symbol = ticker + suffix;
-      const url = 'https://query1.finance.yahoo.com/v8/finance/chart/'
-        + encodeURIComponent(symbol) + '?interval=1d&range=3mo';
-      const p = state.settings?.proxyUrl || '';
-      const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
-      const r = await fetch(target, { headers: { Accept: 'application/json' } });
-      if (!r.ok) continue;
-      const j = await r.json();
-      const res = j.chart?.result?.[0]; if (!res) continue;
-      const ts = res.timestamp || [];
-      const closes = res.indicators?.quote?.[0]?.close || [];
-      // Yahoo returns oldest-first; reverse to newest-first to match KIS format
-      const hist = ts.map((t, i) => ({
-        date: new Date(t * 1000).toISOString().slice(0, 10).replace(/-/g, ''),
-        close: closes[i],
-        frgnNetBuy: null,
-      })).filter(x => x.close != null && x.close > 0).reverse();
-      if (hist.length >= 15) return hist;
-    } catch(e) { /* try next suffix */ }
+    for (const host of ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']) {
+      try {
+        const symbol = ticker + suffix;
+        const url = host + '/v8/finance/chart/' + encodeURIComponent(symbol) + '?interval=1d&range=3mo';
+        const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
+        const r = await fetch(target, { headers: { Accept: 'application/json' } });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const res = j.chart?.result?.[0]; if (!res) continue;
+        const ts = res.timestamp || [];
+        const closes = res.indicators?.quote?.[0]?.close || [];
+        // Yahoo returns oldest-first; reverse to newest-first to match KIS format
+        const hist = ts.map((t, i) => ({
+          date: new Date(t * 1000).toISOString().slice(0, 10).replace(/-/g, ''),
+          close: closes[i],
+          frgnNetBuy: null,
+        })).filter(x => x.close != null && x.close > 0).reverse();
+        if (hist.length >= 15) return hist;
+      } catch(e) { /* try next */ }
+    }
   }
   return [];
 }
@@ -819,9 +821,16 @@ function drawDualMarketGraph(canvasId, hist1, ref1, color1, hist2, ref2, color2)
   drawSeries(hist2, ref2, color2);
 }
 function drawCombinedGraph() {
+  // Always synthesize a 2-point line from prevClose→price if real history is unavailable
+  function liveHist(d) {
+    if (d.history.length >= 2) return d.history;
+    if (d.price != null && d.prevClose != null && d.prevClose !== d.price)
+      return [{ t: Date.now() - 6 * 3600 * 1000, v: d.prevClose }, { t: Date.now(), v: d.price }];
+    return d.history;
+  }
   drawDualMarketGraph('combined-graph',
-    state.forex.history, state.forex.prevClose, '#16a34a',
-    state.oil.history,   state.oil.prevClose,   '#111111'
+    liveHist(state.forex), state.forex.prevClose, '#16a34a',
+    liveHist(state.oil),   state.oil.prevClose,   '#111111'
   );
 }
 function renderMarketWidget(idPrefix, data) {
@@ -868,18 +877,25 @@ async function updateMarketPrices() {
 }
 async function refreshMarketCharts() {
   try {
-    const h = await fetchMarketChart('USDKRW=X');
-    if (h.length >= 2) {
-      state.forex.history = h;
-      if (state.forex.price == null) state.forex.price = h[h.length - 1].v;
+    const { pts, prevClose } = await fetchMarketChart('USDKRW=X');
+    if (pts.length >= 2) {
+      state.forex.history = pts;
+      if (state.forex.price == null) state.forex.price = pts[pts.length - 1].v;
+      if (state.forex.prevClose == null && prevClose) state.forex.prevClose = prevClose;
     }
   } catch(e) { console.warn('Forex chart:', e.message); }
   try {
-    const h = await fetchMarketChart('CL=F');
-    if (h.length >= 2) {
-      state.oil.history = h;
-      // Extract current price from chart last point when quote API didn't provide it
-      if (state.oil.price == null) state.oil.price = h[h.length - 1].v;
+    const { pts, prevClose } = await fetchMarketChart('CL=F');
+    if (pts.length >= 2) {
+      state.oil.history = pts;
+      const lastV = pts[pts.length - 1].v;
+      if (state.oil.price == null) state.oil.price = lastV;
+      if (prevClose && state.oil.prevClose == null) {
+        state.oil.prevClose = prevClose;
+        const chg = +(lastV - prevClose).toFixed(2);
+        if (state.oil.change == null) state.oil.change = chg;
+        if (state.oil.changePct == null) state.oil.changePct = +((chg / prevClose) * 100).toFixed(2);
+      }
     }
   } catch(e) { console.warn('Oil chart:', e.message); }
   renderMarketWidget('fw', state.forex);
