@@ -109,6 +109,7 @@
   .card-foreign b { font-family: var(--mono); font-weight: 600; color: var(--text); }
   .card-foreign b.buy  { color: var(--up); }
   .card-foreign b.sell { color: var(--down); }
+  .card-foreign .frgn-date { font-size: 9px; color: var(--text-muted); opacity: 0.7; margin-right: 2px; }
 
   #widget-row { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
   .market-widget {
@@ -883,7 +884,9 @@ function drawDualMarketGraph(canvasId, hist1, ref1, color1, hist2, ref2, color2)
     const isDailyData = tSpan > 12*3600*1000 && (history.length < 3 || (history[1].t - history[0].t) > 3600*1000);
     const windowMs = isDailyData ? tSpan + 1000 : 6.5*3600*1000;
     const tNow = history[history.length-1].t;
-    const data = history.filter(p => (tNow - p.t) <= windowMs);
+    let data = history.filter(p => (tNow - p.t) <= windowMs);
+    // Fallback: if time-window left an isolated live point (stale bulk + new "now"), keep tail
+    if (data.length < 2) data = history.slice(-Math.min(history.length, 200));
     if (data.length < 2) return;
     const ts = data.map(p=>p.t), vs = data.map(p=>p.v);
     const tMin=ts[0], tMax=ts[ts.length-1];
@@ -967,33 +970,30 @@ async function updateMarketPrices() {
   } catch(e) { console.warn('Market quote error:', e.message); }
 }
 async function refreshMarketCharts() {
+  // Only replace live-built history with Yahoo bars if those bars are recent.
+  // Yahoo's USDKRW=X intraday stops at offshore session end (~05:55 KST); on weekends
+  // CL=F is from Friday close. Stale bars + a live "now" point breaks drawSeries' window filter.
+  const FRESH_MS = 60 * 60 * 1000; // 1 hour
   try {
     const { pts, prevClose } = await fetchMarketChart('USDKRW=X');
     if (pts.length >= 2) {
-      state.forex.history = pts;
-      const lastV = pts[pts.length - 1].v;
-      state.forex.price = lastV;
-      if (prevClose) {
-        state.forex.prevClose = prevClose;
-        // Chart data gives real intraday change — always override Fawaz daily approximation
-        const chg = +(lastV - prevClose).toFixed(2);
-        state.forex.change = chg;
-        state.forex.changePct = +((chg / prevClose) * 100).toFixed(2);
+      const isFresh = (Date.now() - pts[pts.length - 1].t) < FRESH_MS;
+      if (isFresh) {
+        state.forex.history = pts;
+        state.forex.price = pts[pts.length - 1].v;
       }
+      if (prevClose) state.forex.prevClose = prevClose;
     }
   } catch(e) { console.warn('Forex chart:', e.message); }
   try {
     const { pts, prevClose } = await fetchMarketChart('CL=F');
     if (pts.length >= 2) {
-      state.oil.history = pts;
-      const lastV = pts[pts.length - 1].v;
-      state.oil.price = lastV;
-      if (prevClose) {
-        state.oil.prevClose = prevClose;
-        const chg = +(lastV - prevClose).toFixed(2);
-        state.oil.change = chg;
-        state.oil.changePct = +((chg / prevClose) * 100).toFixed(2);
+      const isFresh = (Date.now() - pts[pts.length - 1].t) < FRESH_MS;
+      if (isFresh) {
+        state.oil.history = pts;
+        state.oil.price = pts[pts.length - 1].v;
       }
+      if (prevClose) state.oil.prevClose = prevClose;
     }
   } catch(e) { console.warn('Oil chart:', e.message); }
   renderMarketWidget('fw', state.forex);
@@ -1023,7 +1023,7 @@ function makeCard(stock){
       <span>MACD <b class="pp-macd">—</b></span>
       <span>RSI <b class="pp-rsi">—</b></span>
     </div>
-    <div class="card-foreign">외국인 <b class="pp-frgn0">—</b> / <b class="pp-frgn1">—</b></div>
+    <div class="card-foreign">외국인 <span class="pp-frgn0-date frgn-date"></span> <b class="pp-frgn0">—</b> / <span class="pp-frgn1-date frgn-date"></span> <b class="pp-frgn1">—</b></div>
     <div class="card-past"></div>
   `;
   attachCardEvents(el, stock.ticker);
@@ -1090,8 +1090,21 @@ function renderCardFull(ticker){
     b.className = v > 0 ? 'buy' : v < 0 ? 'sell' : '';
     return b;
   };
+  // Convert YYYYMMDD → "오늘"/"어제"/"N일 전" relative to today
+  const dateLabel = (yyyymmdd) => {
+    if (!yyyymmdd || yyyymmdd.length !== 8) return '';
+    const y = +yyyymmdd.slice(0,4), m = +yyyymmdd.slice(4,6) - 1, d = +yyyymmdd.slice(6,8);
+    const then = new Date(y, m, d); then.setHours(0,0,0,0);
+    const today = new Date(); today.setHours(0,0,0,0);
+    const days = Math.round((today - then) / 86400000);
+    if (days <= 0) return '오늘';
+    if (days === 1) return '어제';
+    return days + '일 전';
+  };
   const f0El = card.querySelector('.pp-frgn0');
   const f1El = card.querySelector('.pp-frgn1');
+  const d0El = card.querySelector('.pp-frgn0-date');
+  const d1El = card.querySelector('.pp-frgn1-date');
   if (f0El && p.frgnRecent) {
     const b = fmtFrgn(p.frgnRecent[0]);
     f0El.replaceWith(b); b.className += ' pp-frgn0'; // keep class for next update
@@ -1100,6 +1113,8 @@ function renderCardFull(ticker){
     const b = fmtFrgn(p.frgnRecent[1]);
     f1El.replaceWith(b); b.className += ' pp-frgn1';
   }
+  if (d0El) d0El.textContent = p.frgnDates ? dateLabel(p.frgnDates[0]) : '';
+  if (d1El) d1El.textContent = p.frgnDates ? dateLabel(p.frgnDates[1]) : '';
   const past = card.querySelector('.card-past');
   past.innerHTML = '';
   (stock.past || []).forEach(key => {
@@ -1140,17 +1155,55 @@ function drawLineGraph(canvas, history, refLine, opts={}){
   const defaultWindow = isDailyData ? tSpan + 1000 : 6.5*3600*1000;
   const windowMs = opts.windowMs ? (isDailyData ? Math.max(opts.windowMs, tSpan+1000) : opts.windowMs) : defaultWindow;
   const tNow = history[history.length-1].t;
-  const data = history.filter(p => (tNow - p.t) <= windowMs);
+  let data = history.filter(p => (tNow - p.t) <= windowMs);
+  if (data.length < 2) data = history.slice(-Math.min(history.length, 200));
   if (data.length < 2) return;
   const ts = data.map(p=>p.t), vs = data.map(p=>p.v);
   const tMin=ts[0], tMax=ts[ts.length-1];
   const vMin=Math.min(...vs, refLine?refLine:Infinity), vMax=Math.max(...vs, refLine?refLine:-Infinity);
   const pad=(vMax-vMin)*0.08||1, lo=vMin-pad, hi=vMax+pad;
-  const x = t => (tMax===tMin ? W : ((t-tMin)/(tMax-tMin))*W);
-  const y = v => H - ((v-lo)/(hi-lo))*H;
+  // Axes margin (only when explicitly enabled — card thumbnails stay unchanged)
+  const showAxes = !!opts.showAxes;
+  const padL = showAxes ? 52 : 0;
+  const padR = showAxes ? 8 : 0;
+  const padT = showAxes ? 6 : 0;
+  const padB = showAxes ? 22 : 0;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const x = t => padL + (tMax===tMin ? plotW : ((t-tMin)/(tMax-tMin))*plotW);
+  const y = v => padT + plotH - ((v-lo)/(hi-lo))*plotH;
+  if (showAxes) {
+    ctx.save();
+    ctx.fillStyle = '#666';
+    ctx.font = "11px 'JetBrains Mono', Consolas, monospace";
+    ctx.strokeStyle = '#eee';
+    ctx.lineWidth = 1;
+    // Y-axis: 5 horizontal gridlines + price labels
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (let i = 0; i <= 5; i++) {
+      const v = lo + (hi - lo) * i / 5;
+      const yPos = y(v);
+      ctx.beginPath(); ctx.moveTo(padL, yPos); ctx.lineTo(padL + plotW, yPos); ctx.stroke();
+      ctx.fillText(fmtNum(v, vMax > 1000 ? 0 : 2), padL - 4, yPos);
+    }
+    // X-axis: 4 time labels (evenly spaced across the visible range)
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    const spanH = (tMax - tMin) / 3600000;
+    for (let i = 0; i <= 4; i++) {
+      const t = tMin + (tMax - tMin) * i / 4;
+      const xPos = x(t);
+      const d = new Date(t);
+      const pad2 = n => String(n).padStart(2,'0');
+      const label = spanH > 36
+        ? `${d.getMonth()+1}/${d.getDate()}`
+        : `${d.getMonth()+1}/${d.getDate()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+      ctx.fillText(label, xPos, padT + plotH + 4);
+    }
+    ctx.restore();
+  }
   if (refLine){
     ctx.strokeStyle='#d1d5db'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
-    ctx.beginPath(); ctx.moveTo(0,y(refLine)); ctx.lineTo(W,y(refLine)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(padL, y(refLine)); ctx.lineTo(padL + plotW, y(refLine)); ctx.stroke();
     ctx.setLineDash([]);
   }
   ctx.lineWidth=1.5;
@@ -1300,7 +1353,7 @@ function renderDetailLive(){
   const canvas=$('#dv-graph');
   if (p.history&&p.history.length>1){
     const graphColor=p.prevClose?(p.price>p.prevClose?'#d92d20':p.price<p.prevClose?'#1d4ed8':'#374151'):'#374151';
-    drawLineGraph(canvas, p.history, p.prevClose, {windowMs:3*24*3600*1000, lineColor:graphColor});
+    drawLineGraph(canvas, p.history, p.prevClose, {windowMs:3*24*3600*1000, lineColor:graphColor, showAxes:true});
   } else {
     const ctx=canvas.getContext('2d'); if(canvas.width>0) ctx.clearRect(0,0,canvas.width,canvas.height);
   }
@@ -1424,6 +1477,7 @@ async function refreshHistoricalOne(stock){
       ent.macd = calcMACD(hist);
       ent.rsi  = calcRSI(hist);
       ent.frgnRecent = hist.slice(0, 2).map(h => h.frgnNetBuy);
+      ent.frgnDates  = hist.slice(0, 2).map(h => h.date); // YYYYMMDD strings, parallel to frgnRecent
     }
     renderCardFull(stock.ticker);
     if (state.detailTicker === stock.ticker) renderDetailLive();
