@@ -717,8 +717,32 @@ async function fetchMarketQuotes() {
     }
     return null;
   }
+  // Forex: Coinbase (CORS-friendly, real-time) + Fawaz yesterday for prevClose
+  async function fetchForex() {
+    try {
+      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      const [cbR, yrR] = await Promise.all([
+        fetch('https://api.coinbase.com/v2/exchange-rates?currency=USD'),
+        fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${yesterday}/v1/currencies/usd.json`).catch(() => null)
+      ]);
+      if (cbR.ok) {
+        const cbJ = await cbR.json();
+        const krw = parseFloat(cbJ.data?.rates?.KRW);
+        if (krw) {
+          let prevKrw = null;
+          try { if (yrR?.ok) { const yj = await yrR.json(); prevKrw = yj.usd?.krw || null; } } catch(e) {}
+          const chg = prevKrw ? +(krw - prevKrw).toFixed(2) : null;
+          const pct = chg != null && prevKrw ? +((chg / prevKrw) * 100).toFixed(2) : null;
+          return { symbol: 'USDKRW=X', regularMarketPrice: +krw.toFixed(2),
+            regularMarketChange: chg, regularMarketChangePercent: pct,
+            regularMarketPreviousClose: prevKrw };
+        }
+      }
+    } catch(e) {}
+    return chartQ('USDKRW%3DX', 'USDKRW=X');
+  }
   try {
-    const [fq, oq] = await Promise.all([chartQ('USDKRW%3DX', 'USDKRW=X'), chartQ('CL%3DF', 'CL=F')]);
+    const [fq, oq] = await Promise.all([fetchForex(), chartQ('CL%3DF', 'CL=F')]);
     const res = [fq, oq].filter(Boolean);
     if (res.length) return res;
   } catch(e) {}
