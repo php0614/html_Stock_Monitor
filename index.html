@@ -700,7 +700,7 @@ async function fetchMarketQuotes() {
       try {
         const url = `${host}/${ver}/finance/quote${params}`;
         const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
-        const r = await fetch(target, { headers: { Accept: 'application/json' } });
+        const r = await fetch(target, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
         if (!r.ok) continue;
         const j = await r.json();
         const res = j.quoteResponse?.result || [];
@@ -754,6 +754,27 @@ async function fetchMarketQuotes() {
       }
     }
   } catch(e) {}
+  // Fallback 3: Yahoo chart endpoint for CL=F (oil) — works when /quote is rate-limited
+  try {
+    const p2 = state.settings?.proxyUrl || '';
+    for (const host of ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']) {
+      const url = host + '/v8/finance/chart/CL%3DF?interval=5m&range=1d';
+      const target = p2 ? (p2.endsWith('/') ? p2 + url : p2 + '/' + url) : url;
+      const r = await fetch(target, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const meta = j.chart?.result?.[0]?.meta;
+      if (meta?.regularMarketPrice) {
+        const price = meta.regularMarketPrice;
+        const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? null;
+        const chg = prevClose ? +(price - prevClose).toFixed(2) : null;
+        const chgPct = (chg != null && prevClose) ? +((chg / prevClose) * 100).toFixed(2) : null;
+        return [{ symbol: 'CL=F', regularMarketPrice: price,
+          regularMarketChange: chg, regularMarketChangePercent: chgPct,
+          regularMarketPreviousClose: prevClose }];
+      }
+    }
+  } catch(e) {}
   return [];
 }
 async function fetchMarketChart(symbol) {
@@ -762,7 +783,7 @@ async function fetchMarketChart(symbol) {
     try {
       const url = host + '/v8/finance/chart/' + encodeURIComponent(symbol) + '?interval=5m&range=1d';
       const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
-      const r = await fetch(target, { headers: { Accept: 'application/json' } });
+      const r = await fetch(target, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
       if (!r.ok) continue;
       const j = await r.json();
       const res = j.chart?.result?.[0]; if (!res) continue;
@@ -936,7 +957,7 @@ async function refreshMarketCharts() {
     if (pts.length >= 2) {
       state.forex.history = pts;
       const lastV = pts[pts.length - 1].v;
-      if (state.forex.price == null) state.forex.price = lastV;
+      state.forex.price = lastV;
       if (prevClose) {
         state.forex.prevClose = prevClose;
         // Chart data gives real intraday change — always override Fawaz daily approximation
@@ -951,12 +972,12 @@ async function refreshMarketCharts() {
     if (pts.length >= 2) {
       state.oil.history = pts;
       const lastV = pts[pts.length - 1].v;
-      if (state.oil.price == null) state.oil.price = lastV;
-      if (prevClose && state.oil.prevClose == null) {
+      state.oil.price = lastV;
+      if (prevClose) {
         state.oil.prevClose = prevClose;
         const chg = +(lastV - prevClose).toFixed(2);
-        if (state.oil.change == null) state.oil.change = chg;
-        if (state.oil.changePct == null) state.oil.changePct = +((chg / prevClose) * 100).toFixed(2);
+        state.oil.change = chg;
+        state.oil.changePct = +((chg / prevClose) * 100).toFixed(2);
       }
     }
   } catch(e) { console.warn('Oil chart:', e.message); }
