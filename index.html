@@ -881,8 +881,8 @@ function drawCombinedGraph() {
   }
   const fh = liveHist(state.forex);
   const oh = liveHist(state.oil);
-  // Don't clear the canvas if neither series has data — preserves prior drawing
-  if (fh.length < 2 && oh.length < 2) return;
+  // Never clear if forex has no data — oil chart often arrives before Fawaz, wiping the green line
+  if (fh.length < 2) return;
   drawDualMarketGraph('combined-graph',
     fh, state.forex.prevClose, '#16a34a',
     oh, state.oil.prevClose,   '#111111'
@@ -1035,14 +1035,14 @@ function renderCardFull(ticker){
   if (macdEl) {
     const v = p.macd;
     macdEl.textContent = v != null ? (v >= 0 ? '+' : '') + fmtNum(v, 1) : '—';
-    macdEl.className = v != null ? (v > 0 ? 'up' : v < 0 ? 'down' : '') : '';
+    macdEl.className = 'pp-macd' + (v != null ? (v > 0 ? ' up' : v < 0 ? ' down' : '') : '');
   }
   // RSI
   const rsiEl = card.querySelector('.pp-rsi');
   if (rsiEl) {
     const v = p.rsi;
     rsiEl.textContent = v != null ? String(v) : '—';
-    rsiEl.className = v != null ? (v >= 70 ? 'overbought' : v <= 30 ? 'oversold' : '') : '';
+    rsiEl.className = 'pp-rsi' + (v != null ? (v >= 70 ? ' overbought' : v <= 30 ? ' oversold' : '') : '');
   }
   // Foreign net buy — 2 most recent days from daily history
   const fmtFrgn = (v) => {
