@@ -1102,7 +1102,7 @@ function drawLineGraph(canvas, history, refLine, opts={}){
   const pad=(vMax-vMin)*0.08||1, lo=vMin-pad, hi=vMax+pad;
   // Axes margin (only when explicitly enabled — card thumbnails stay unchanged)
   const showAxes = !!opts.showAxes;
-  const padL = showAxes ? 52 : 0;
+  const padL = showAxes ? 72 : 0;
   const padR = showAxes ? 8 : 0;
   const padT = showAxes ? 6 : 0;
   const padB = showAxes ? 22 : 0;
@@ -1383,8 +1383,9 @@ async function refreshHistoricalOne(stock){
         }
       }
     } catch(e){ hist = []; }
-    // Try Yahoo if KIS gave insufficient data for MACD (needs 27 points)
-    if (hist.length < 27) {
+    // Extend with Yahoo to ~3 months — KIS's inquire-daily-price endpoint only returns ~30 days.
+    // Without this, the detail-view chart starts ~6 weeks ago instead of 3 months ago.
+    if (hist.length < 60) {
       try { const yh = await yahooHistoryKR(stock.ticker); if (yh.length > hist.length) hist = yh; } catch(e) {}
     }
     // Final fallback: Naver Finance fchart (works on mobile without auth)
