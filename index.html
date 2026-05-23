@@ -686,15 +686,33 @@ function calcRSI(hist, period = 14) { // hist: newest-first
 
 // --------- Market data (exchange rate + oil) via Yahoo Finance ---------
 async function fetchMarketQuotes() {
-  const url = 'https://query1.finance.yahoo.com/v8/finance/quote'
-    + '?symbols=USDKRW%3DX%2CCL%3DF'
-    + '&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketPreviousClose';
   const p = state.settings?.proxyUrl || '';
-  const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
-  const r = await fetch(target, { headers: { Accept: 'application/json' } });
-  if (!r.ok) throw new Error('Yahoo quote ' + r.status);
-  const j = await r.json();
-  return j.quoteResponse?.result || [];
+  const params = '?symbols=USDKRW%3DX%2CCL%3DF&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketPreviousClose';
+  // Try Yahoo Finance on both CDN hosts and both API versions
+  for (const host of ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']) {
+    for (const ver of ['v8', 'v7']) {
+      try {
+        const url = `${host}/${ver}/finance/quote${params}`;
+        const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
+        const r = await fetch(target, { headers: { Accept: 'application/json' } });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const res = j.quoteResponse?.result || [];
+        if (res.length) return res;
+      } catch(e) { /* try next */ }
+    }
+  }
+  // Fallback: free CDN currency API for USD/KRW (oil will retain last cached value)
+  try {
+    const r = await fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json');
+    if (r.ok) {
+      const j = await r.json();
+      const krw = j.usd?.krw;
+      if (krw) return [{ symbol: 'USDKRW=X', regularMarketPrice: krw,
+        regularMarketChange: null, regularMarketChangePercent: null, regularMarketPreviousClose: null }];
+    }
+  } catch(e) {}
+  return [];
 }
 async function fetchMarketChart(symbol) {
   const p = state.settings?.proxyUrl || '';
