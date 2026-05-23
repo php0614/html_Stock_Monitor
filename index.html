@@ -87,6 +87,10 @@
   .card-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; gap: 6px; }
   .card-name { font-weight: 600; font-size: 13px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card-ticker { font-family: var(--mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+  .card-copy-btn { background: transparent; border: none; padding: 2px 4px; cursor: pointer; color: #6b7280; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; line-height: 0; }
+  .card-copy-btn:hover { background: rgba(0,0,0,0.07); color: #111; }
+  .card-copy-btn.copied { color: #16a34a; }
+  .card-copy-btn svg { display: block; }
   .card-price { font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; margin: 2px 0; }
   .card-price.up { color: var(--up); }
   .card-price.down { color: var(--down); }
@@ -110,6 +114,7 @@
   .card-foreign b.buy  { color: var(--up); }
   .card-foreign b.sell { color: var(--down); }
   .card-foreign .frgn-date { font-size: 9px; color: var(--text-muted); opacity: 0.7; margin-right: 2px; }
+  .card-comment { margin-top: 6px; padding: 6px 8px; font-size: 11px; color: #374151; background: rgba(0,0,0,0.04); border-left: 2px solid #9ca3af; border-radius: 3px; white-space: pre-wrap; word-break: break-word; }
 
   #widget-row { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
   .market-widget {
@@ -296,6 +301,10 @@
       <div class="past-row"><span>2번:</span><select data-past-idx="1"></select></div>
       <div class="past-row"><span>3번:</span><select data-past-idx="2"></select></div>
       <div class="past-row"><span>4번:</span><select data-past-idx="3"></select></div>
+    </div>
+    <div class="modal-row">
+      <label>메모 (선택)</label>
+      <textarea id="ps-comment" rows="3" style="width:100%;padding:6px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical;box-sizing:border-box" placeholder="이 종목에 대한 메모를 입력하세요"></textarea>
     </div>
     <div class="modal-actions">
       <button class="btn secondary" id="ps-cancel">취소</button>
@@ -948,7 +957,15 @@ function makeCard(stock){
   el.innerHTML = `
     <div class="card-header">
       <div class="card-name">${escapeHtml(stock.name || stock.ticker)}</div>
-      <div class="card-ticker">${escapeHtml(stock.ticker)}</div>
+      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+        <div class="card-ticker">${escapeHtml(stock.ticker)}</div>
+        <button class="card-copy-btn" title="정보 복사" aria-label="정보 복사">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="12" height="12" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+      </div>
     </div>
     <div class="card-price">—</div>
     <div class="card-change">—</div>
@@ -963,11 +980,72 @@ function makeCard(stock){
     </div>
     <div class="card-foreign">외국인 <span class="pp-frgn0-date frgn-date"></span> <b class="pp-frgn0">—</b> / <span class="pp-frgn1-date frgn-date"></span> <b class="pp-frgn1">—</b></div>
     <div class="card-past"></div>
+    <div class="card-comment" style="display:none"></div>
   `;
+  if (stock.comment) {
+    const cEl = el.querySelector('.card-comment');
+    cEl.textContent = stock.comment;
+    cEl.style.display = '';
+  }
+  const copyBtn = el.querySelector('.card-copy-btn');
+  if (copyBtn) {
+    // Swallow all interaction so it doesn't bubble to the card (which opens detail / long-press settings)
+    ['touchstart','touchend','dblclick','contextmenu'].forEach(ev =>
+      copyBtn.addEventListener(ev, e => e.stopPropagation(), ev === 'touchstart' ? {passive:true} : false)
+    );
+    copyBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const text = buildStockCopyText(stock.ticker);
+      try {
+        await navigator.clipboard.writeText(text);
+        copyBtn.classList.add('copied');
+        setTimeout(() => copyBtn.classList.remove('copied'), 1200);
+      } catch(err) {
+        // Fallback for non-HTTPS contexts where clipboard API is unavailable
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); copyBtn.classList.add('copied'); setTimeout(()=>copyBtn.classList.remove('copied'),1200); } catch(_) {}
+        document.body.removeChild(ta);
+      }
+    });
+  }
   attachCardEvents(el, stock.ticker);
   return el;
 }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Build the LLM prompt string copied by the card's copy button.
+function buildStockCopyText(ticker) {
+  const stock = findStock(ticker); if (!stock) return '';
+  const p = state.prices[ticker] || {};
+  const parts = [stock.name || ticker];
+  const dayOf = (yyyymmdd) => {
+    if (!yyyymmdd || yyyymmdd.length !== 8) return '';
+    const y = +yyyymmdd.slice(0,4), m = +yyyymmdd.slice(4,6) - 1, d = +yyyymmdd.slice(6,8);
+    const then = new Date(y, m, d); then.setHours(0,0,0,0);
+    const today = new Date(); today.setHours(0,0,0,0);
+    const days = Math.round((today - then) / 86400000);
+    return days <= 0 ? '오늘' : `${days}일전`;
+  };
+  if (p.price != null)      parts.push(`가격: ${fmtNum(p.price, 0)}원`);
+  if (p.per != null)        parts.push(`PER: ${fmtNum(p.per, 2)}`);
+  if (p.roe != null)        parts.push(`ROE: ${fmtNum(p.roe, 2)}%`);
+  if (p.macd != null)       parts.push(`MACD: ${(p.macd >= 0 ? '+' : '') + fmtNum(p.macd, 1)}`);
+  if (p.rsi != null)        parts.push(`RSI: ${fmtNum(p.rsi, 1)}`);
+  if (p.frgnRecent?.length >= 2 && p.frgnDates?.length >= 2) {
+    const fmtFn = (v) => (v >= 0 ? '+' : '') + fmtNum(v, 0);
+    parts.push(`외국인 매수 매도: ${dayOf(p.frgnDates[0])} ${fmtFn(p.frgnRecent[0])} / ${dayOf(p.frgnDates[1])} ${fmtFn(p.frgnRecent[1])}`);
+  }
+  const pastList = [['1d','1일전'],['2d','2일전'],['3d','3일전'],['1w','1주일전'],['1m','1개월전']];
+  pastList.forEach(([k, label]) => {
+    const v = p.pastCloses && p.pastCloses[k];
+    if (v != null) parts.push(`${label} 가격: ${fmtNum(v, 0)}`);
+  });
+  if (stock.comment) parts.push(`코멘트: ${stock.comment}`);
+  const suffix = ' 이 내용을 바탕으로 해당 주식의 앞으로의 등락 전망을 예측해봐. 해당 주식에 관련된, 지금 시점으로 부터 48시간이 지나지 않은 시점에 작성된 뉴스들 10개도 반드시 검색을 통해 찾아보고 (임의로 생성하지 말것, 뉴스의 출처 링크들을 표시해.), 그 내용 또한 이 수치들과 함께 예측에 활용해.';
+  return parts.join(', ') + suffix;
+}
 
 function renderGrids(){
   const container = $('#grid-kr');
@@ -1208,6 +1286,7 @@ function openGridSettings(ticker){
   $('#ps-ticker').value = stock.ticker;
   $('#ps-name').value = stock.name;
   $('#ps-bgcolor').value = stock.bgColor || '#ffffff';
+  $('#ps-comment').value = stock.comment || '';
   for (let i=0;i<4;i++){
     const sel = document.querySelector(`#gridSettingsModal select[data-past-idx="${i}"]`);
     sel.innerHTML = PAST_OPTIONS.map(o=>`<option value="${o.key}">${escapeHtml(o.label)}</option>`).join('');
@@ -1228,6 +1307,7 @@ async function saveGridSettings(){
   stock.name    = newName;
   stock.past    = past;
   stock.bgColor = newBgColor;
+  stock.comment = $('#ps-comment').value.trim();
   delete state.prices[psEditingTicker];
   closeGridSettings();
   await saveSettings();
@@ -1415,8 +1495,12 @@ async function refreshHistoricalOne(stock){
       }
       ent.macd = calcMACD(hist);
       ent.rsi  = calcRSI(hist);
-      ent.frgnRecent = hist.slice(0, 2).map(h => h.frgnNetBuy);
-      ent.frgnDates  = hist.slice(0, 2).map(h => h.date); // YYYYMMDD strings, parallel to frgnRecent
+      // Take the two most recent entries that actually have a foreign net-buy value.
+      // After a holiday the latest row may have frgnNetBuy=null until the figure settles —
+      // skip those so we still show the last two real values instead of dashes.
+      const validFrgn = hist.filter(h => h.frgnNetBuy != null && !isNaN(h.frgnNetBuy)).slice(0, 2);
+      ent.frgnRecent = validFrgn.map(h => h.frgnNetBuy);
+      ent.frgnDates  = validFrgn.map(h => h.date); // YYYYMMDD strings, parallel to frgnRecent
     }
     renderCardFull(stock.ticker);
     if (state.detailTicker === stock.ticker) renderDetailLive();
