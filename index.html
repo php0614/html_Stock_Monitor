@@ -702,14 +702,25 @@ async function fetchMarketQuotes() {
       } catch(e) { /* try next */ }
     }
   }
-  // Fallback: free CDN currency API for USD/KRW (oil will retain last cached value)
+  // Fallback: free CDN currency API for USD/KRW (fetch today + yesterday in parallel for prevClose)
   try {
-    const r = await fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json');
-    if (r.ok) {
-      const j = await r.json();
-      const krw = j.usd?.krw;
-      if (krw) return [{ symbol: 'USDKRW=X', regularMarketPrice: krw,
-        regularMarketChange: null, regularMarketChangePercent: null, regularMarketPreviousClose: null }];
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const [tr, yr] = await Promise.all([
+      fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json'),
+      fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${yesterday}/v1/currencies/usd.json`).catch(() => null)
+    ]);
+    if (tr.ok) {
+      const tj = await tr.json();
+      const krw = tj.usd?.krw;
+      if (krw) {
+        let prevKrw = null;
+        try { if (yr?.ok) { const yj = await yr.json(); prevKrw = yj.usd?.krw || null; } } catch(e) {}
+        const change = prevKrw ? +(krw - prevKrw).toFixed(2) : null;
+        const changePct = prevKrw ? +((change / prevKrw) * 100).toFixed(2) : null;
+        return [{ symbol: 'USDKRW=X', regularMarketPrice: krw,
+          regularMarketChange: change, regularMarketChangePercent: changePct,
+          regularMarketPreviousClose: prevKrw }];
+      }
     }
   } catch(e) {}
   return [];
@@ -839,10 +850,16 @@ async function updateMarketPrices() {
       if (!d) return;
       d.price = q.regularMarketPrice; d.prevClose = q.regularMarketPreviousClose;
       d.change = q.regularMarketChange; d.changePct = q.regularMarketChangePercent;
-      // Accumulate price history so the graph works even when the chart API fails on mobile
-      if (d.price != null && (!d.history.length || now - d.history[d.history.length-1].t > 4000)) {
-        d.history.push({ t: now, v: d.price });
-        if (d.history.length > 1440) d.history = d.history.slice(-720);
+      if (d.price != null) {
+        const lastPt = d.history[d.history.length - 1];
+        // Seed prevClose as anchor point once so graph shows slope from yesterday
+        if (!d.history.length && d.prevClose != null && d.prevClose !== d.price)
+          d.history.push({ t: now - 6 * 3600 * 1000, v: d.prevClose });
+        // Only append if price changed or >5 min since last point (avoids flat line from daily-rate APIs)
+        if (!lastPt || lastPt.v !== d.price || (now - lastPt.t) > 5 * 60 * 1000) {
+          d.history.push({ t: now, v: d.price });
+          if (d.history.length > 1440) d.history = d.history.slice(-720);
+        }
       }
     });
     renderMarketWidget('fw', state.forex);
@@ -850,12 +867,23 @@ async function updateMarketPrices() {
   } catch(e) { console.warn('Market quote error:', e.message); }
 }
 async function refreshMarketCharts() {
-  // Only replace accumulated poll history if Yahoo returns real data
-  try { const h = await fetchMarketChart('USDKRW=X'); if (h.length >= 2) state.forex.history = h; }
-  catch(e) { console.warn('Forex chart:', e.message); }
-  try { const h = await fetchMarketChart('CL=F'); if (h.length >= 2) state.oil.history = h; }
-  catch(e) { console.warn('Oil chart:', e.message); }
-  drawCombinedGraph();
+  try {
+    const h = await fetchMarketChart('USDKRW=X');
+    if (h.length >= 2) {
+      state.forex.history = h;
+      if (state.forex.price == null) state.forex.price = h[h.length - 1].v;
+    }
+  } catch(e) { console.warn('Forex chart:', e.message); }
+  try {
+    const h = await fetchMarketChart('CL=F');
+    if (h.length >= 2) {
+      state.oil.history = h;
+      // Extract current price from chart last point when quote API didn't provide it
+      if (state.oil.price == null) state.oil.price = h[h.length - 1].v;
+    }
+  } catch(e) { console.warn('Oil chart:', e.message); }
+  renderMarketWidget('fw', state.forex);
+  renderMarketWidget('ow', state.oil);
 }
 
 // --------- Render ---------
