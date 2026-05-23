@@ -717,11 +717,29 @@ async function fetchMarketQuotes() {
     }
     return null;
   }
+  // Forex: Dunamu (Korean onshore real-time rate) first, fall back to Yahoo chart
+  async function fetchForex() {
+    try {
+      const r = await fetch('https://quotation-api-cdn.dunamu.com/v1/forex/recent?codes=FRX.KRWUSD');
+      if (r.ok) {
+        const j = await r.json();
+        const item = Array.isArray(j) ? j[0] : null;
+        if (item?.basePrice) {
+          const krw = +item.basePrice;
+          const chg = item.change === 'RISE' ? +item.changePrice
+                    : item.change === 'FALL' ? -(+item.changePrice) : 0;
+          const prevKrw = +(krw - chg).toFixed(2);
+          const changePct = prevKrw ? +((chg / prevKrw) * 100).toFixed(2) : 0;
+          return { symbol: 'USDKRW=X', regularMarketPrice: krw,
+            regularMarketChange: chg, regularMarketChangePercent: changePct,
+            regularMarketPreviousClose: prevKrw };
+        }
+      }
+    } catch(e) {}
+    return chartQ('USDKRW%3DX', 'USDKRW=X');
+  }
   try {
-    const [fq, oq] = await Promise.all([
-      chartQ('USDKRW%3DX', 'USDKRW=X'),
-      chartQ('CL%3DF', 'CL=F'),
-    ]);
+    const [fq, oq] = await Promise.all([fetchForex(), chartQ('CL%3DF', 'CL=F')]);
     const res = [fq, oq].filter(Boolean);
     if (res.length) return res;
   } catch(e) {}
@@ -794,7 +812,8 @@ async function fetchMarketChart(symbol) {
   const p = state.settings?.proxyUrl || '';
   for (const host of ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']) {
     try {
-      const url = host + '/v8/finance/chart/' + encodeURIComponent(symbol) + '?interval=5m&range=1d';
+      const range = symbol === 'USDKRW=X' ? '2d' : '1d';
+      const url = host + '/v8/finance/chart/' + encodeURIComponent(symbol) + '?interval=5m&range=' + range;
       const target = p ? (p.endsWith('/') ? p + url : p + '/' + url) : url;
       const r = await fetch(target, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
       if (!r.ok) continue;
