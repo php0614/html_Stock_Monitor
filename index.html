@@ -617,14 +617,10 @@ async function kisQuote(ticker){
 }
 async function kisDailyHistory(ticker){
   const token = await kisGetToken();
-  // Request 3 months for enough data for MACD (needs 27+ points)
-  const end   = new Date().toISOString().slice(0,10).replace(/-/g,'');
-  const start = new Date(Date.now() - 90*24*3600*1000).toISOString().slice(0,10).replace(/-/g,'');
   const url = withProxy(kisBase()
     + '/uapi/domestic-stock/v1/quotations/inquire-daily-price'
     + '?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=' + encodeURIComponent(ticker)
-    + '&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0'
-    + '&FID_INPUT_DATE_1=' + start + '&FID_INPUT_DATE_2=' + end);
+    + '&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0');
   const r = await _kisLimiter.fetch(url, {
     headers: {
       'authorization': 'Bearer ' + token,
@@ -641,11 +637,13 @@ async function kisDailyHistory(ticker){
   const rows = Array.isArray(j.output2) ? j.output2
              : Array.isArray(j.output)  ? j.output
              : [];
-  return rows.map(row => ({
+  const hist = rows.map(row => ({
     date: row.stck_bsop_date,
     close: +row.stck_clpr,
     frgnNetBuy: (row.frgn_ntby_qty !== undefined && row.frgn_ntby_qty !== '') ? +row.frgn_ntby_qty : null,
   })).filter(x => x.close > 0);
+  console.log(`[KIS hist] ${ticker}: rt_cd=${j.rt_cd} output[]=${Array.isArray(j.output)?j.output.length:'obj'} output2[]=${Array.isArray(j.output2)?j.output2.length:'no'} → ${hist.length} valid rows`);
+  return hist;
 }
 
 // KR name lookup via Naver
@@ -874,8 +872,11 @@ function drawDualMarketGraph(canvasId, hist1, ref1, color1, hist2, ref2, color2)
 function drawCombinedGraph() {
   function liveHist(d) {
     if (d.history.length >= 2) return d.history;
-    if (d.price != null && d.prevClose != null && d.prevClose !== d.price)
-      return [{ t: Date.now() - 6 * 3600 * 1000, v: d.prevClose }, { t: Date.now(), v: d.price }];
+    // Synthesize 2-point line from prevClose→price; works even when unchanged (flat line)
+    if (d.price != null) {
+      const anchor = d.prevClose ?? d.price;
+      return [{ t: Date.now() - 6 * 3600 * 1000, v: anchor }, { t: Date.now(), v: d.price }];
+    }
     return d.history;
   }
   const fh = liveHist(state.forex);
@@ -1385,6 +1386,7 @@ async function refreshHistoricalOne(stock){
       ent.macd = calcMACD(hist);
       ent.rsi  = calcRSI(hist);
       ent.frgnRecent = hist.slice(0, 2).map(h => h.frgnNetBuy);
+      console.log(`[MACD/RSI] ${stock.ticker}: hist=${hist.length} macd=${ent.macd} rsi=${ent.rsi}`);
     }
     renderCardFull(stock.ticker);
     if (state.detailTicker === stock.ticker) renderDetailLive();
