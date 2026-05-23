@@ -1028,10 +1028,13 @@ function renderCardFull(ticker){
   const card = findCard(ticker); if (!card) return;
   const p = state.prices[ticker] || {};
   const stock = findStock(ticker); if (!stock) return;
-  card.querySelector('.pp-per').textContent = (p.per != null) ? fmtNum(p.per, 2) : '—';
-  card.querySelector('.pp-roe').textContent = (p.roe != null) ? (fmtNum(p.roe, 2) + '%') : '—';
+  const perEl = card.querySelector('.pp-per');
+  const roeEl = card.querySelector('.pp-roe');
+  if (perEl) perEl.textContent = (p.per != null) ? fmtNum(p.per, 2) : '—';
+  if (roeEl) roeEl.textContent = (p.roe != null) ? (fmtNum(p.roe, 2) + '%') : '—';
   // MACD
   const macdEl = card.querySelector('.pp-macd');
+  console.log(`[rcf] ${ticker} macd=${p.macd} rsi=${p.rsi} macdEl=${!!macdEl}`);
   if (macdEl) {
     const v = p.macd;
     macdEl.textContent = v != null ? (v >= 0 ? '+' : '') + fmtNum(v, 1) : '—';
