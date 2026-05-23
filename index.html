@@ -770,6 +770,24 @@ async function yahooHistoryKR(ticker) {
   }
   return [];
 }
+async function naverHistoryKR(ticker) {
+  // Naver Finance fchart — pipe-delimited: |YYYYMMDD|open|high|low|close|volume
+  // Newest-first, no auth required, works on mobile
+  try {
+    const url = `https://fchart.stock.naver.com/sise.nhn?symbol=${encodeURIComponent(ticker)}&timeframe=day&count=100&requestType=0`;
+    const r = await fetch(url);
+    if (!r.ok) return [];
+    const text = await r.text();
+    const hist = text.split('\n')
+      .filter(l => /\|\d{8}\|/.test(l))
+      .map(l => {
+        const parts = l.replace(/^\|/, '').split('|');
+        return { date: (parts[0] || '').trim(), close: +(parts[4] || 0), frgnNetBuy: null };
+      })
+      .filter(x => x.close > 0 && /^\d{8}$/.test(x.date));
+    return hist; // already newest-first from Naver
+  } catch(e) { return []; }
+}
 function drawMarketGraph(canvasId, history, refPrice) {
   const canvas = document.getElementById(canvasId); if (!canvas) return;
   if (!history || history.length < 2) return;
@@ -821,16 +839,19 @@ function drawDualMarketGraph(canvasId, hist1, ref1, color1, hist2, ref2, color2)
   drawSeries(hist2, ref2, color2);
 }
 function drawCombinedGraph() {
-  // Always synthesize a 2-point line from prevClose→price if real history is unavailable
   function liveHist(d) {
     if (d.history.length >= 2) return d.history;
     if (d.price != null && d.prevClose != null && d.prevClose !== d.price)
       return [{ t: Date.now() - 6 * 3600 * 1000, v: d.prevClose }, { t: Date.now(), v: d.price }];
     return d.history;
   }
+  const fh = liveHist(state.forex);
+  const oh = liveHist(state.oil);
+  // Don't clear the canvas if neither series has data — preserves prior drawing
+  if (fh.length < 2 && oh.length < 2) return;
   drawDualMarketGraph('combined-graph',
-    liveHist(state.forex), state.forex.prevClose, '#16a34a',
-    liveHist(state.oil),   state.oil.prevClose,   '#111111'
+    fh, state.forex.prevClose, '#16a34a',
+    oh, state.oil.prevClose,   '#111111'
   );
 }
 function renderMarketWidget(idPrefix, data) {
@@ -880,8 +901,15 @@ async function refreshMarketCharts() {
     const { pts, prevClose } = await fetchMarketChart('USDKRW=X');
     if (pts.length >= 2) {
       state.forex.history = pts;
-      if (state.forex.price == null) state.forex.price = pts[pts.length - 1].v;
-      if (state.forex.prevClose == null && prevClose) state.forex.prevClose = prevClose;
+      const lastV = pts[pts.length - 1].v;
+      if (state.forex.price == null) state.forex.price = lastV;
+      if (prevClose) {
+        state.forex.prevClose = prevClose;
+        // Chart data gives real intraday change — always override Fawaz daily approximation
+        const chg = +(lastV - prevClose).toFixed(2);
+        state.forex.change = chg;
+        state.forex.changePct = +((chg / prevClose) * 100).toFixed(2);
+      }
     }
   } catch(e) { console.warn('Forex chart:', e.message); }
   try {
@@ -1292,8 +1320,13 @@ async function refreshHistoricalOne(stock){
         }
       }
     } catch(e){ hist = []; }
-    if (!hist.length) {
-      try { hist = await yahooHistoryKR(stock.ticker); } catch(e) {}
+    // Try Yahoo if KIS gave insufficient data for MACD (needs 27 points)
+    if (hist.length < 27) {
+      try { const yh = await yahooHistoryKR(stock.ticker); if (yh.length > hist.length) hist = yh; } catch(e) {}
+    }
+    // Final fallback: Naver Finance fchart (works on mobile without auth)
+    if (hist.length < 27) {
+      try { const nh = await naverHistoryKR(stock.ticker); if (nh.length > hist.length) hist = nh; } catch(e) {}
     }
     if (hist.length){
       const allKeys = new Set([...(stock.past||[]), ...(state.detailPast||[])]);
