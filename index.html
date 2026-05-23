@@ -617,10 +617,14 @@ async function kisQuote(ticker){
 }
 async function kisDailyHistory(ticker){
   const token = await kisGetToken();
+  // Request 3 months for enough data for MACD (needs 27+ points)
+  const end   = new Date().toISOString().slice(0,10).replace(/-/g,'');
+  const start = new Date(Date.now() - 90*24*3600*1000).toISOString().slice(0,10).replace(/-/g,'');
   const url = withProxy(kisBase()
     + '/uapi/domestic-stock/v1/quotations/inquire-daily-price'
     + '?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=' + encodeURIComponent(ticker)
-    + '&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0');
+    + '&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0'
+    + '&FID_INPUT_DATE_1=' + start + '&FID_INPUT_DATE_2=' + end);
   const r = await _kisLimiter.fetch(url, {
     headers: {
       'authorization': 'Bearer ' + token,
@@ -633,7 +637,11 @@ async function kisDailyHistory(ticker){
   if (!r.ok) throw new Error('KIS 일자별 시세 실패: ' + r.status);
   const j = await r.json();
   if (j.rt_cd !== '0') throw new Error('KIS daily: ' + (j.msg1 || j.msg_cd || 'API error'));
-  return (j.output || []).map(row => ({
+  // KIS returns daily records in output2 (array); output is a single summary object
+  const rows = Array.isArray(j.output2) ? j.output2
+             : Array.isArray(j.output)  ? j.output
+             : [];
+  return rows.map(row => ({
     date: row.stck_bsop_date,
     close: +row.stck_clpr,
     frgnNetBuy: (row.frgn_ntby_qty !== undefined && row.frgn_ntby_qty !== '') ? +row.frgn_ntby_qty : null,
@@ -702,12 +710,33 @@ async function fetchMarketQuotes() {
       } catch(e) { /* try next */ }
     }
   }
-  // Fallback: free CDN currency API for USD/KRW (fetch today + yesterday in parallel for prevClose)
+  // Fallback 1: Dunamu (Kakao Pay) forex API — real-time KRW rate with actual change
+  try {
+    const r = await fetch('https://quotation-api-cdn.dunamu.com/v1/forex/recent?codes=FRX.KRWUSD');
+    if (r.ok) {
+      const j = await r.json();
+      const item = Array.isArray(j) ? j[0] : null;
+      if (item?.basePrice) {
+        const krw = +item.basePrice;
+        const chg = item.change === 'RISE' ? +item.changePrice
+                  : item.change === 'FALL' ? -(+item.changePrice)
+                  : 0;
+        const prevKrw = +(krw - chg).toFixed(2);
+        const changePct = prevKrw ? +((chg / prevKrw) * 100).toFixed(2) : 0;
+        return [{ symbol: 'USDKRW=X', regularMarketPrice: krw,
+          regularMarketChange: chg, regularMarketChangePercent: changePct,
+          regularMarketPreviousClose: prevKrw }];
+      }
+    }
+  } catch(e) {}
+  // Fallback 2: Fawaz CDN daily rate (lags 1-2 days, change may be inaccurate)
   try {
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-    const [tr, yr] = await Promise.all([
+    const twoDaysAgo = new Date(Date.now() - 2*86400000).toISOString().slice(0, 10);
+    const [tr, yr, dr] = await Promise.all([
       fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json'),
-      fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${yesterday}/v1/currencies/usd.json`).catch(() => null)
+      fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${yesterday}/v1/currencies/usd.json`).catch(() => null),
+      fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${twoDaysAgo}/v1/currencies/usd.json`).catch(() => null)
     ]);
     if (tr.ok) {
       const tj = await tr.json();
@@ -715,8 +744,12 @@ async function fetchMarketQuotes() {
       if (krw) {
         let prevKrw = null;
         try { if (yr?.ok) { const yj = await yr.json(); prevKrw = yj.usd?.krw || null; } } catch(e) {}
-        const change = prevKrw ? +(krw - prevKrw).toFixed(2) : null;
-        const changePct = prevKrw ? +((change / prevKrw) * 100).toFixed(2) : null;
+        // If today and yesterday have the same rate (Fawaz lag), try 2 days ago
+        if (!prevKrw || prevKrw === krw) {
+          try { if (dr?.ok) { const dj = await dr.json(); prevKrw = dj.usd?.krw || prevKrw; } } catch(e) {}
+        }
+        const change = prevKrw && prevKrw !== krw ? +(krw - prevKrw).toFixed(2) : null;
+        const changePct = change != null ? +((change / prevKrw) * 100).toFixed(2) : null;
         return [{ symbol: 'USDKRW=X', regularMarketPrice: krw,
           regularMarketChange: change, regularMarketChangePercent: changePct,
           regularMarketPreviousClose: prevKrw }];
